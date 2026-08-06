@@ -234,6 +234,14 @@ sortable issue 链接内的 `bg-surface`。
 处理：让 `.pe-chat-launcher` 跟随 `--cbg-surface-opacity`（`* 28%`），
 不要保留原生近实底。
 
+### 创建智能体「访问权限」选中灰块
+
+原因：权限 radiogroup 里选中项带实色 `.bg-muted`，悬停同款，
+透明页面上会变成一整块黑/灰底。
+
+处理：`[role="radiogroup"] [role="radio"][class~="bg-muted"]` / `:hover` 跟随
+`--cbg-surface-opacity`（`* 100%`）；选中态仍靠 radio 圆点。
+
 ### 创建智能体「指令」框右下角小黑块
 
 原因：描述/指令 `textarea` 开了 `resize: vertical`，Chromium 原生

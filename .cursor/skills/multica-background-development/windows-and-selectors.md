@@ -81,6 +81,8 @@ Multica 更新后 DOM 可能变；改样式前必须再用 CDP 核对，不要�
   用 `textarea { resize: none }` 卸手柄，并清 resizer / scrollbar-corner。
 - **创建页底栏横切**：`.pe-chat-launcher.sticky.bottom-0` 原生约 95% 实底，
   会把壁纸（头发等）齐腰切断；跟随 `--cbg-surface-opacity` `* 28%`。
+- **访问权限选中块**：`[role="radiogroup"] [role="radio"][class~="bg-muted"]`
+  （及 `:hover`）原生实底；跟随 `--cbg-surface-opacity` `* 100%`，选中靠圆点表达。
 
 ### 看板 / 用量 / 运行时卡片
 

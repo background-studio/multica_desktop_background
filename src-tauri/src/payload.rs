@@ -128,6 +128,7 @@ mod tests {
         assert!(payload.script.contains(r#".bg-page-canvas .bg-background"#));
         assert!(payload.script.contains(r#".bg-page-canvas .sticky::after"#));
         assert!(payload.script.contains(".pe-chat-launcher"));
+        assert!(payload.script.contains(r#"[role=\"radiogroup\"] [role=\"radio\"][class~=\"bg-muted\"]"#));
         assert!(payload.script.contains("resize: none !important"));
         assert!(payload.script.contains("textarea::-webkit-resizer"));
         assert!(payload.script.contains(".bg-card"));

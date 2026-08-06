@@ -24,6 +24,7 @@ describe("renderer payload", () => {
     expect(payload).toContain("textarea::-webkit-resizer");
     expect(payload).toContain(".bg-card");
     expect(payload).toContain(".pe-chat-launcher");
+    expect(payload).toContain('[role="radiogroup"] [role="radio"][class~="bg-muted"]');
     expect(payload).toContain('[data-slot="sidebar-inner"]');
     expect(payload).toContain('[data-sidebar="menu-button"][data-active]');
     expect(payload).toContain('[data-sidebar="menu-button"]:hover');

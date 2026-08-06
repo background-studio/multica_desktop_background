@@ -147,6 +147,18 @@ html.multica-background-active textarea::-webkit-scrollbar-corner {
   background: transparent !important;
 }
 
+/*
+ * 创建页「访问权限」等 radiogroup：选中项原生 bg-muted 是实底灰块，
+ * 悬停同款。跟随页面透明度，选中态仍靠 radio 圆点表达。
+ */
+html.multica-background-active [role="radiogroup"] [role="radio"][class~="bg-muted"],
+html.multica-background-active [role="radiogroup"] button[class~="bg-muted"],
+html.multica-background-active button[role="radio"][class~="bg-muted"],
+html.multica-background-active [role="radiogroup"] [role="radio"]:hover {
+  background: color-mix(in srgb, var(--cbg-surface-color, #191919) calc(var(--cbg-surface-opacity) * 100%), transparent) !important;
+  background-color: color-mix(in srgb, var(--cbg-surface-color, #191919) calc(var(--cbg-surface-opacity) * 100%), transparent) !important;
+}
+
 /* Electron WCO 把原生窗口按钮叠在同一客户区；顶栏为其预留右侧安全区。 */
 html.multica-background-active.multica-background-wco header.relative.shrink-0.h-12 {
   box-sizing: border-box !important;
