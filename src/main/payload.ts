@@ -93,11 +93,12 @@ html.multica-background-active [data-sidebar="menu-button"]:focus-visible {
   box-shadow: none !important;
 }
 
-/* 主画布 / 顶栏 / 卡片壳：外层打底，内部文字层保持可读。 */
+/* 主画布 / 顶栏 / 卡片壳 / 创建页底栏：外层打底，内部文字层保持可读。 */
 html.multica-background-active .bg-page-canvas,
 html.multica-background-active header,
 html.multica-background-active [data-slot="card"],
-html.multica-background-active [data-slot="chat-input-surface"] {
+html.multica-background-active [data-slot="chat-input-surface"],
+html.multica-background-active .pe-chat-launcher {
   background: color-mix(in srgb, var(--cbg-surface-color, #191919) calc(var(--cbg-surface-opacity) * 28%), transparent) !important;
   background-color: color-mix(in srgb, var(--cbg-surface-color, #191919) calc(var(--cbg-surface-opacity) * 28%), transparent) !important;
   backdrop-filter: none !important;
@@ -124,6 +125,26 @@ html.multica-background-active .bg-page-canvas .sticky::after {
   background-image: none !important;
   box-shadow: none !important;
   border-color: transparent !important;
+}
+
+/*
+ * textarea 右下角原生拉伸手柄（::-webkit-resizer）：
+ * 创建智能体「指令」等 resize:vertical 框右下角会冒小黑块。
+ * 只把 resizer 设成 transparent 不够——Electron 透明窗上这块会透出窗体黑底。
+ * 关掉原生 resize，手柄整颗卸掉；scrollbar-corner 一并清掉兜底。
+ */
+html.multica-background-active textarea {
+  resize: none !important;
+}
+html.multica-background-active textarea::-webkit-resizer {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+html.multica-background-active textarea::-webkit-scrollbar-corner {
+  background: transparent !important;
 }
 
 /* Electron WCO 把原生窗口按钮叠在同一客户区；顶栏为其预留右侧安全区。 */

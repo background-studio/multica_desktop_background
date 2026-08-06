@@ -66,7 +66,7 @@ Multica 更新后 DOM 可能变；改样式前必须再用 CDP 核对，不要�
 ### 顶栏与主画布
 
 - 稳定入口：`.bg-page-canvas`、`header`、`[data-slot="card"]`、
-  `[data-slot="chat-input-surface"]`
+  `[data-slot="chat-input-surface"]`、创建页底栏 `.pe-chat-launcher`
 - 透明度：`--cbg-surface-opacity`，雾度 `* 28%`
 - WCO 时顶栏额外吃 `--cbg-wco-safe-right`
 - **内层实底**：Create Agent 等路由会在 canvas 内再铺
@@ -76,6 +76,11 @@ Multica 更新后 DOM 可能变；改样式前必须再用 CDP 核对，不要�
   `::after` 向下渐变（`linear-gradient(oklch(...) → transparent)`，高约 12px）。
   透明化后会变成横向黑影；必须清
   `.bg-page-canvas .sticky::before/::after` 的 `background-image`。
+- **textarea 小黑块**：创建智能体「指令 / 描述」等 `resize: vertical` 输入框右下角
+  原生 `::-webkit-resizer`。Electron 透明窗上不能只清背景（会透窗体黑底）；
+  用 `textarea { resize: none }` 卸手柄，并清 resizer / scrollbar-corner。
+- **创建页底栏横切**：`.pe-chat-launcher.sticky.bottom-0` 原生约 95% 实底，
+  会把壁纸（头发等）齐腰切断；跟随 `--cbg-surface-opacity` `* 28%`。
 
 ### 看板 / 用量 / 运行时卡片
 
@@ -103,7 +108,7 @@ Multica 更新后 DOM 可能变；改样式前必须再用 CDP 核对，不要�
 |------|----------|----------|----------|
 | 左侧边栏壳 | `--cbg-sidebar-opacity` | `[data-sidebar="sidebar"]`、`[data-slot="sidebar-inner"]` | `* 28%` |
 | 侧栏选中/悬停 | `--cbg-sidebar-opacity` | `[data-sidebar="menu-button"][data-active]` / `:hover` / `:focus-visible` | `* 100%` |
-| 顶栏与页面 | `--cbg-surface-opacity` | `.bg-page-canvas`、`header`、`[data-slot="card"]`、`[data-slot="chat-input-surface"]` | `* 28%` |
+| 顶栏与页面 | `--cbg-surface-opacity` | `.bg-page-canvas`、`header`、`[data-slot="card"]`、`[data-slot="chat-input-surface"]`、`.pe-chat-launcher` | `* 28%` |
 | 任务卡片 | `--cbg-card-opacity` | sortable issue 卡片内 `[class~="bg-surface"]` | `* 100%` |
 | 弹出菜单 | `--cbg-menu-opacity` | dialog/menu/listbox、`.bg-surface-raised` | `* 100%` |
 | 底色遮罩 | overlay 设置 | `#multica-background-overlay` | 直接 opacity |

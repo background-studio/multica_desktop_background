@@ -127,6 +127,9 @@ mod tests {
         assert!(payload.script.contains(r#"[data-sidebar=\"menu-button\"]:hover"#));
         assert!(payload.script.contains(r#".bg-page-canvas .bg-background"#));
         assert!(payload.script.contains(r#".bg-page-canvas .sticky::after"#));
+        assert!(payload.script.contains(".pe-chat-launcher"));
+        assert!(payload.script.contains("resize: none !important"));
+        assert!(payload.script.contains("textarea::-webkit-resizer"));
         assert!(payload.script.contains(".bg-card"));
         assert!(payload.script.contains("data:image/png;base64,"));
         assert_eq!(payload.revision.len(), 64);

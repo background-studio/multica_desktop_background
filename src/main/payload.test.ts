@@ -20,7 +20,10 @@ describe("renderer payload", () => {
     expect(payload).toContain(".bg-page-canvas");
     expect(payload).toContain(".bg-page-canvas .bg-background");
     expect(payload).toContain(".bg-page-canvas .sticky::after");
+    expect(payload).toContain("resize: none !important");
+    expect(payload).toContain("textarea::-webkit-resizer");
     expect(payload).toContain(".bg-card");
+    expect(payload).toContain(".pe-chat-launcher");
     expect(payload).toContain('[data-slot="sidebar-inner"]');
     expect(payload).toContain('[data-sidebar="menu-button"][data-active]');
     expect(payload).toContain('[data-sidebar="menu-button"]:hover');

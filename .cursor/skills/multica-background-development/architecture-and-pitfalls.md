@@ -226,6 +226,24 @@ sortable issue 链接内的 `bg-surface`。
 
 处理：清 `.bg-page-canvas .sticky::before/::after` 的背景与渐变，不只改表头本身。
 
+### 创建智能体底栏横切壁纸（头发被切断）
+
+原因：配置页底部 `.pe-chat-launcher.sticky.bottom-0` 带约 95% 实色底，
+透明化后仍像一条黑杠压在壁纸上，把头发等细节齐腰切断。
+
+处理：让 `.pe-chat-launcher` 跟随 `--cbg-surface-opacity`（`* 28%`），
+不要保留原生近实底。
+
+### 创建智能体「指令」框右下角小黑块
+
+原因：描述/指令 `textarea` 开了 `resize: vertical`，Chromium 原生
+`::-webkit-resizer` 手柄在 Electron 透明窗上会画成一颗实心小黑方块。
+只把 resizer 背景设成 `transparent` 不够——那一块会直接透出窗体黑底
+（CDP 用 lime 染 `::-webkit-resizer` 可复现：黑块变绿）。
+
+处理：`textarea { resize: none }` 卸掉原生手柄；再清
+`::-webkit-resizer` / `::-webkit-scrollbar-corner`。代价是不能再拖角改高。
+
 ### 应用后「没有可用的 Multica CDP 运行时」
 
 原因：启动插件时 Multica 还没带着调试端口在跑，或 runtime.json 失效。
