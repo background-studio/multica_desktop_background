@@ -84,6 +84,15 @@ html.multica-background-active [data-slot="sidebar-inner"] {
   box-shadow: none !important;
 }
 
+/* 选中 / 悬停的侧栏入口继续保留文字强调，但底色跟随“左侧边栏”透明度。 */
+html.multica-background-active [data-sidebar="menu-button"][data-active],
+html.multica-background-active [data-sidebar="menu-button"]:hover,
+html.multica-background-active [data-sidebar="menu-button"]:focus-visible {
+  background: color-mix(in srgb, var(--cbg-surface-color, #191919) calc(var(--cbg-sidebar-opacity) * 100%), transparent) !important;
+  background-color: color-mix(in srgb, var(--cbg-surface-color, #191919) calc(var(--cbg-sidebar-opacity) * 100%), transparent) !important;
+  box-shadow: none !important;
+}
+
 /* 主画布 / 顶栏 / 卡片壳：外层打底，内部文字层保持可读。 */
 html.multica-background-active .bg-page-canvas,
 html.multica-background-active header,

@@ -19,6 +19,9 @@ describe("renderer payload", () => {
     expect(payload).toContain('[data-sidebar="sidebar"]');
     expect(payload).toContain(".bg-page-canvas");
     expect(payload).toContain('[data-slot="sidebar-inner"]');
+    expect(payload).toContain('[data-sidebar="menu-button"][data-active]');
+    expect(payload).toContain('[data-sidebar="menu-button"]:hover');
+    expect(payload).toContain('[data-sidebar="menu-button"]:focus-visible');
     expect(payload).toContain("--cbg-sidebar-opacity");
     expect(payload).toContain("--cbg-surface-opacity");
     expect(payload).toContain("--cbg-menu-opacity");
