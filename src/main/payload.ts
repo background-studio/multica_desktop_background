@@ -113,6 +113,19 @@ html.multica-background-active .bg-page-canvas .bg-background {
   background-color: transparent !important;
 }
 
+/*
+ * 智能体等列表 sticky 表头底部的 ::after / ::before 渐变：
+ * 页面透明后会收成一条黑杠（和 Codex sticky 同款问题）。
+ */
+html.multica-background-active .bg-page-canvas .sticky::before,
+html.multica-background-active .bg-page-canvas .sticky::after {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  border-color: transparent !important;
+}
+
 /* Electron WCO 把原生窗口按钮叠在同一客户区；顶栏为其预留右侧安全区。 */
 html.multica-background-active.multica-background-wco header.relative.shrink-0.h-12 {
   box-sizing: border-box !important;

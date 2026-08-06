@@ -72,6 +72,10 @@ Multica 更新后 DOM 可能变；改样式前必须再用 CDP 核对，不要�
 - **内层实底**：Create Agent 等路由会在 canvas 内再铺
   `.bg-page-canvas .bg-background`（`oklch(...)` 实色）。外层 canvas 已打雾时，
   内层必须强制透明，否则整页发黑、背景“整个没有”。
+- **sticky 黑杠**：智能体列表等 `group/header sticky` 表头带
+  `::after` 向下渐变（`linear-gradient(oklch(...) → transparent)`，高约 12px）。
+  透明化后会变成横向黑影；必须清
+  `.bg-page-canvas .sticky::before/::after` 的 `background-image`。
 
 ### 看板 / 用量 / 运行时卡片
 

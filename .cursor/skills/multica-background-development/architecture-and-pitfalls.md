@@ -218,6 +218,14 @@ sortable issue 链接内的 `bg-surface`。
 
 处理：内层 `.bg-background` 强制透明，只保留外层 canvas 的 surface 雾。
 
+### 智能体列表中间出现黑色阴影横杠
+
+原因：sticky 表头 `group/header` 用 `::after` 画了一条
+`linear-gradient(oklch(0.18 …) → transparent)` 的滚动淡出；页面透明后这条渐变
+看起来就像横切的黑杠（Codex sticky 搜索栏同类问题）。
+
+处理：清 `.bg-page-canvas .sticky::before/::after` 的背景与渐变，不只改表头本身。
+
 ### 应用后「没有可用的 Multica CDP 运行时」
 
 原因：启动插件时 Multica 还没带着调试端口在跑，或 runtime.json 失效。
