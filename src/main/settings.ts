@@ -68,6 +68,7 @@ export function normalizeSettings(value: unknown): AppSettings {
       taskIntensity: clamp(display.taskIntensity, 0, 1, DEFAULT_SETTINGS.display.taskIntensity),
       sidebarOpacity: clamp(display.sidebarOpacity, 0, 1, DEFAULT_SETTINGS.display.sidebarOpacity),
       surfaceOpacity: clamp(display.surfaceOpacity, 0, 1, DEFAULT_SETTINGS.display.surfaceOpacity),
+      cardOpacity: clamp(display.cardOpacity, 0, 1, DEFAULT_SETTINGS.display.cardOpacity),
       composerOpacity: clamp(display.composerOpacity, 0, 1, DEFAULT_SETTINGS.display.composerOpacity),
       menuOpacity: clamp(display.menuOpacity, 0, 1, DEFAULT_SETTINGS.display.menuOpacity),
       terminalOpacity: clamp(display.terminalOpacity, 0, 1, DEFAULT_SETTINGS.display.terminalOpacity),

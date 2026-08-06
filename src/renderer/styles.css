@@ -460,7 +460,7 @@ select:focus-visible {
   display: grid;
   gap: 14px;
 }
-.task-composition i { width: 62%; height: 8px; display: block; background: rgb(49 64 58 / 26%); border-radius: 4px; }
+.task-composition i { width: 62%; height: 8px; display: block; background: rgb(49 64 58 / calc(var(--preview-card, .35) * 100%)); border-radius: 4px; }
 .task-composition i:nth-child(2) { width: 78%; }
 .task-composition i:nth-child(3) { width: 48%; margin-left: 34%; }
 .task-composition i:nth-child(4) { width: 67%; margin-left: 22%; }

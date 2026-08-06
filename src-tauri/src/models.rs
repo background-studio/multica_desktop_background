@@ -72,6 +72,7 @@ pub struct DisplaySettings {
     pub task_intensity: f64,
     pub sidebar_opacity: f64,
     pub surface_opacity: f64,
+    pub card_opacity: f64,
     pub composer_opacity: f64,
     pub menu_opacity: f64,
     pub terminal_opacity: f64,
@@ -97,6 +98,7 @@ impl Default for DisplaySettings {
             task_intensity: 0.32,
             sidebar_opacity: 0.18,
             surface_opacity: 0.12,
+            card_opacity: 0.35,
             composer_opacity: 0.88,
             menu_opacity: 0.9,
             terminal_opacity: 0.9,
@@ -186,6 +188,7 @@ pub struct DisplayPatch {
     pub task_intensity: Option<f64>,
     pub sidebar_opacity: Option<f64>,
     pub surface_opacity: Option<f64>,
+    pub card_opacity: Option<f64>,
     pub composer_opacity: Option<f64>,
     pub menu_opacity: Option<f64>,
     pub terminal_opacity: Option<f64>,
@@ -421,6 +424,11 @@ impl AppSettings {
                     0.0,
                     1.0,
                 ),
+                card_opacity: clamp(
+                    number(display, "cardOpacity", defaults.display.card_opacity),
+                    0.0,
+                    1.0,
+                ),
                 composer_opacity: clamp(
                     number(
                         display,
@@ -534,6 +542,7 @@ impl AppSettings {
             set_clamped!(task_intensity, 0.0, 1.0);
             set_clamped!(sidebar_opacity, 0.0, 1.0);
             set_clamped!(surface_opacity, 0.0, 1.0);
+            set_clamped!(card_opacity, 0.0, 1.0);
             set_clamped!(composer_opacity, 0.0, 1.0);
             set_clamped!(menu_opacity, 0.0, 1.0);
             set_clamped!(terminal_opacity, 0.0, 1.0);
@@ -601,6 +610,7 @@ mod tests {
                 "overlayColor": "red; background:url(x)",
                 "sidebarOpacity": 0,
                 "surfaceOpacity": 0,
+                "cardOpacity": 0,
                 "composerOpacity": 0,
                 "menuOpacity": 0,
                 "terminalOpacity": 0
@@ -612,6 +622,7 @@ mod tests {
         assert_eq!(settings.display.blur, 0.0);
         assert_eq!(settings.display.sidebar_opacity, 0.0);
         assert_eq!(settings.display.surface_opacity, 0.0);
+        assert_eq!(settings.display.card_opacity, 0.0);
         assert_eq!(settings.display.composer_opacity, 0.0);
         assert_eq!(settings.display.menu_opacity, 0.0);
         assert_eq!(settings.display.terminal_opacity, 0.0);

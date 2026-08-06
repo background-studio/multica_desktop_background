@@ -15,13 +15,15 @@ use serde_json::Value;
 use wait_timeout::ChildExt;
 
 use crate::{
-    injector::{read_browser_identity, InjectorEngine},
+    electron_wco,
+    injector::{read_browser_identity, window_controls_overlay_visible, InjectorEngine},
     models::RuntimeStatus,
     settings::write_json_transaction,
 };
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const PREFERRED_DEBUG_PORT: u16 = 9227;
+const RUNTIME_SCHEMA_VERSION: u8 = 2;
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +40,7 @@ struct RuntimeState {
     schema_version: u8,
     port: u16,
     browser_id: String,
+    wco_enabled: bool,
     package_full_name: String,
     executable: String,
     created_at: String,
@@ -317,7 +320,11 @@ impl MulticaController {
         let state = fs::read_to_string(&state_path)
             .ok()
             .and_then(|content| serde_json::from_str::<RuntimeState>(&content).ok())
-            .filter(|state| state.schema_version == 1 && !state.browser_id.is_empty());
+            .filter(|state| {
+                state.schema_version == RUNTIME_SCHEMA_VERSION
+                    && state.wco_enabled
+                    && !state.browser_id.is_empty()
+            });
         Self {
             state_path,
             engine: None,
@@ -351,8 +358,10 @@ impl MulticaController {
             return false;
         };
         if state.package_full_name != install.package_full_name
+            || !state.wco_enabled
             || normalized_path(&state.executable) != normalized_path(&install.executable)
             || read_browser_identity(state.port).ok().as_deref() != Some(&state.browser_id)
+            || !window_controls_overlay_visible(state.port, &state.browser_id).unwrap_or(false)
         {
             return false;
         }
@@ -429,10 +438,14 @@ impl MulticaController {
                 let Ok(browser_id) = read_browser_identity(port) else {
                     continue;
                 };
+                if !window_controls_overlay_visible(port, &browser_id).unwrap_or(false) {
+                    continue;
+                }
                 self.write_state(Some(RuntimeState {
-                    schema_version: 1,
+                    schema_version: RUNTIME_SCHEMA_VERSION,
                     port,
                     browser_id: browser_id.clone(),
+                    wco_enabled: true,
                     package_full_name: install.package_full_name.clone(),
                     executable: install.executable.clone(),
                     created_at: Utc::now().to_rfc3339(),
@@ -453,29 +466,29 @@ impl MulticaController {
                 stop_verified_multica(&install)?;
             }
             let port = select_port(PREFERRED_DEBUG_PORT)?;
-            launch_multica(
-                &install,
-                &[
-                    "--remote-debugging-address=127.0.0.1".to_string(),
-                    format!("--remote-debugging-port={port}"),
-                    // Chromium 142+ 拒绝无 Origin 的 CDP WebSocket；放行本机调试附着。
-                    "--remote-allow-origins=*".to_string(),
-                ],
-            )?;
-            let deadline = Instant::now() + Duration::from_secs(45);
-            let browser_id = loop {
-                if let Ok(identity) = read_browser_identity(port) {
-                    break identity;
+            let browser_id = match electron_wco::launch_with_transparent_wco(
+                Path::new(&install.executable),
+                port,
+            ) {
+                Ok(browser_id) => browser_id,
+                Err(error) => {
+                    let recovery = stop_verified_multica(&install)
+                        .and_then(|_| launch_multica(&install, &[]));
+                    return Err(match recovery {
+                        Ok(()) => format!(
+                            "透明原生按钮标题栏启动失败，已恢复官方 Multica：{error}"
+                        ),
+                        Err(recovery_error) => format!(
+                            "透明原生按钮标题栏启动失败：{error}；恢复官方 Multica 也失败：{recovery_error}"
+                        ),
+                    });
                 }
-                if Instant::now() >= deadline {
-                    return Err("Multica 未能在 45 秒内打开安全的本机调试端口。".to_string());
-                }
-                thread::sleep(Duration::from_millis(400));
             };
             self.write_state(Some(RuntimeState {
-                schema_version: 1,
+                schema_version: RUNTIME_SCHEMA_VERSION,
                 port,
                 browser_id: browser_id.clone(),
+                wco_enabled: true,
                 package_full_name: install.package_full_name,
                 executable: install.executable,
                 created_at: Utc::now().to_rfc3339(),

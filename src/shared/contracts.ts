@@ -36,6 +36,7 @@ export interface DisplaySettings {
   taskIntensity: number;
   sidebarOpacity: number;
   surfaceOpacity: number;
+  cardOpacity: number;
   composerOpacity: number;
   menuOpacity: number;
   terminalOpacity: number;
@@ -146,6 +147,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     taskIntensity: 0.32,
     sidebarOpacity: 0.18,
     surfaceOpacity: 0.12,
+    cardOpacity: 0.35,
     composerOpacity: 0.88,
     menuOpacity: 0.9,
     terminalOpacity: 0.9,

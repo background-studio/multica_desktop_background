@@ -22,8 +22,17 @@ describe("renderer payload", () => {
     expect(payload).toContain("--cbg-sidebar-opacity");
     expect(payload).toContain("--cbg-surface-opacity");
     expect(payload).toContain("--cbg-menu-opacity");
+    expect(payload).toContain("--cbg-wco-safe-right");
+    expect(payload).toContain("--cbg-card-opacity");
+    expect(payload).toContain('aria-roledescription="sortable"');
+    expect(payload).toContain('a[href*="/issues/"]');
+    expect(payload).toContain("windowControlsOverlay");
+    expect(payload).toContain("geometrychange");
+    expect(payload).toContain("multica-background-wco");
     expect(payload).toContain("[role=");
     expect(payload).toContain("syncFullWindowMedia");
+    expect(payload).not.toContain("outerHeight");
+    expect(payload).not.toContain("chromeH");
     expect(payload).toContain("multica-background-home");
     expect(payload).toContain("multica-background-task");
     expect(payload).toContain("media.playbackRate");

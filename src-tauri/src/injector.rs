@@ -338,6 +338,18 @@ impl Drop for CdpSession {
     }
 }
 
+pub fn window_controls_overlay_visible(port: u16, browser_id: &str) -> Result<bool, String> {
+    let target = list_targets(port, browser_id)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "Multica 主页面尚未创建。".to_string())?;
+    let session = CdpSession::open(&target, port)?;
+    Ok(session
+        .evaluate("Boolean(navigator.windowControlsOverlay?.visible)")?
+        .as_bool()
+        .unwrap_or(false))
+}
+
 struct ManagedSession {
     session: CdpSession,
     early_script_id: Option<String>,
@@ -392,7 +404,7 @@ const EARLY_TRANSPARENCY_SCRIPT: &str = r#"(() => {
   try {
     const style = document.createElement("style");
     style.id = "multica-background-early-transparency";
-    style.textContent = "html,body,#root,.bg-app-shell,[data-slot=sidebar-wrapper],[data-sidebar=sidebar],[data-slot=sidebar-inner],.bg-page-canvas,header{background:transparent!important;background-color:transparent!important}";
+    style.textContent = "html,body,#root,.bg-app-shell,[data-slot=sidebar-wrapper],[data-sidebar=sidebar],[data-slot=sidebar-inner],.bg-page-canvas,header,[role=button][aria-roledescription=sortable]>a[href*='/issues/']>[class~=bg-surface]{background:transparent!important;background-color:transparent!important}";
     (document.documentElement || document).appendChild(style);
   } catch {}
 })()"#;

@@ -1,4 +1,5 @@
 mod controller;
+mod electron_wco;
 mod host;
 mod injector;
 mod media;

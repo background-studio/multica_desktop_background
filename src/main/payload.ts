@@ -95,6 +95,22 @@ html.multica-background-active [data-slot="chat-input-surface"] {
   box-shadow: none !important;
 }
 
+/* Electron WCO 把原生窗口按钮叠在同一客户区；顶栏为其预留右侧安全区。 */
+html.multica-background-active.multica-background-wco header.relative.shrink-0.h-12 {
+  box-sizing: border-box !important;
+  padding-right: var(--cbg-wco-safe-right, 0px) !important;
+}
+
+/* 看板任务卡片：只调整卡片底色，文字、状态和拖拽命中保持完整不透明。 */
+html.multica-background-active
+  [role="button"][aria-roledescription="sortable"]
+  > a[href*="/issues/"]
+  > [class~="bg-surface"] {
+  background: color-mix(in srgb, var(--cbg-surface-color, #191919) calc(var(--cbg-card-opacity) * 100%), transparent) !important;
+  background-color: color-mix(in srgb, var(--cbg-surface-color, #191919) calc(var(--cbg-card-opacity) * 100%), transparent) !important;
+  box-shadow: none !important;
+}
+
 html.multica-background-active [role="dialog"],
 html.multica-background-active [role="menu"],
 html.multica-background-active [role="listbox"],
@@ -144,7 +160,7 @@ export function buildRendererPayload(input: PayloadInput) {
     const ROOT_CLASSES = [
       "multica-background-active", "multica-background-home", "multica-background-task",
       "multica-background-home-disabled", "multica-background-task-disabled",
-      "multica-background-fit-tile", "multica-background-dark"
+      "multica-background-fit-tile", "multica-background-dark", "multica-background-wco"
     ];
     const ROOT_PROPERTIES = [
       "--cbg-opacity", "--cbg-blur", "--cbg-scale", "--cbg-fit",
@@ -152,7 +168,8 @@ export function buildRendererPayload(input: PayloadInput) {
       "--cbg-overlay-opacity", "--cbg-home-intensity", "--cbg-task-intensity",
       "--cbg-route-intensity", "--cbg-sidebar-opacity", "--cbg-surface-opacity",
       "--cbg-composer-opacity", "--cbg-menu-opacity", "--cbg-terminal-opacity",
-      "--cbg-block-fill-opacity", "--cbg-media-url", "--cbg-surface-color"
+      "--cbg-block-fill-opacity", "--cbg-media-url", "--cbg-surface-color",
+      "--cbg-wco-safe-right", "--cbg-card-opacity"
     ];
 
     const previous = window[STATE];
@@ -161,6 +178,7 @@ export function buildRendererPayload(input: PayloadInput) {
     } else {
       if (previous?.observer) previous.observer.disconnect();
       if (previous?.timer) clearInterval(previous.timer);
+      previous?.wco?.removeEventListener?.("geometrychange", previous?.wcoGeometry);
       previous?.layer?.remove();
       if (previous?.blobUrl) URL.revokeObjectURL(previous.blobUrl);
     }
@@ -212,6 +230,7 @@ export function buildRendererPayload(input: PayloadInput) {
       const state = window[STATE];
       state?.observer?.disconnect();
       if (state?.timer) clearInterval(state.timer);
+      state?.wco?.removeEventListener?.("geometrychange", state?.wcoGeometry);
       if (scheduled) cancelAnimationFrame(scheduled);
       if (shadowPatch?.prototype.attachShadow === shadowPatch.wrapped) {
         shadowPatch.prototype.attachShadow = shadowPatch.original;
@@ -277,6 +296,14 @@ export function buildRendererPayload(input: PayloadInput) {
       const dark = detectAppearance() === "dark";
       setClass("multica-background-dark", dark);
       setProp("--cbg-surface-color", dark ? "#191919" : "#ffffff");
+      const wco = navigator.windowControlsOverlay;
+      const titlebarRect = wco?.visible ? wco.getTitlebarAreaRect?.() : null;
+      const wcoVisible = Boolean(titlebarRect && titlebarRect.width > 0);
+      const safeRight = wcoVisible
+        ? Math.max(0, window.innerWidth - (titlebarRect.x + titlebarRect.width))
+        : 0;
+      setClass("multica-background-wco", wcoVisible);
+      setProp("--cbg-wco-safe-right", safeRight + "px");
 
       let style = document.getElementById(STYLE_ID);
       if (!style) {
@@ -339,6 +366,7 @@ export function buildRendererPayload(input: PayloadInput) {
       setProp("--cbg-task-intensity", String(config.display.taskIntensity));
       setProp("--cbg-sidebar-opacity", String(config.display.sidebarOpacity));
       setProp("--cbg-surface-opacity", String(config.display.surfaceOpacity));
+      setProp("--cbg-card-opacity", String(config.display.cardOpacity));
       setProp("--cbg-composer-opacity", String(config.display.composerOpacity));
       setProp("--cbg-menu-opacity", String(config.display.menuOpacity));
       setProp("--cbg-terminal-opacity", String(config.display.terminalOpacity));
@@ -363,7 +391,13 @@ export function buildRendererPayload(input: PayloadInput) {
       attributeFilter: ["class", "data-theme", "data-appearance"],
     });
     const timer = setInterval(install, 4000);
-    window[STATE] = { revision: config.revision, cleanup, observer, timer, layer: null, blobUrl };
+    const wco = navigator.windowControlsOverlay;
+    const wcoGeometry = () => scheduleInstall();
+    wco?.addEventListener?.("geometrychange", wcoGeometry);
+    window[STATE] = {
+      revision: config.revision, cleanup, observer, timer, layer: null, blobUrl,
+      wco, wcoGeometry,
+    };
     install();
     window[STATE].layer = document.getElementById(LAYER_ID);
     return { installed: true, revision: config.revision, mediaKind: config.mediaKind };
@@ -378,8 +412,10 @@ export const REMOVE_RENDERER_PAYLOAD = String.raw`(() => {
   document.documentElement?.classList.remove(
     "multica-background-active", "multica-background-home", "multica-background-task",
     "multica-background-home-disabled", "multica-background-task-disabled",
-    "multica-background-fit-tile"
+    "multica-background-fit-tile", "multica-background-wco"
   );
+  document.documentElement?.style.removeProperty("--cbg-wco-safe-right");
+  document.documentElement?.style.removeProperty("--cbg-card-opacity");
   delete window.__MULTICA_BACKGROUND_STUDIO__;
   return true;
 })()`;

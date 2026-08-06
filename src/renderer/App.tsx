@@ -200,6 +200,7 @@ function Preview({ item, display, route, onRouteChange, onPositionChange }: {
     "--preview-overlay-opacity": display.overlayOpacity,
     "--preview-sidebar": display.sidebarOpacity,
     "--preview-surface": display.surfaceOpacity,
+    "--preview-card": display.cardOpacity,
     "--preview-composer": display.composerOpacity,
     "--preview-url": `url("${item?.previewUrl ?? ""}")`,
   } as CSSProperties;
@@ -459,6 +460,7 @@ export default function App() {
                 <p className="section-hint">给壳层加一点雾。0 为全透，露出整张背景。</p>
                 <RangeControl label="左侧边栏" value={display.sidebarOpacity} min={0} max={1} step={0.01} onChange={(sidebarOpacity) => patchSettings({ display: { sidebarOpacity } })} />
                 <RangeControl label="顶栏与页面" value={display.surfaceOpacity} min={0} max={1} step={0.01} onChange={(surfaceOpacity) => patchSettings({ display: { surfaceOpacity } })} />
+                <RangeControl label="任务卡片" value={display.cardOpacity} min={0} max={1} step={0.01} onChange={(cardOpacity) => patchSettings({ display: { cardOpacity } })} />
                 <RangeControl label="弹出菜单" value={display.menuOpacity} min={0} max={1} step={0.01} onChange={(menuOpacity) => patchSettings({ display: { menuOpacity } })} />
               </section>
             </>}

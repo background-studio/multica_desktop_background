@@ -47,6 +47,7 @@ describe("normalizeSettings", () => {
       display: {
         sidebarOpacity: 0,
         surfaceOpacity: 0,
+        cardOpacity: 0,
         composerOpacity: 0,
         menuOpacity: 0,
         terminalOpacity: 0,
@@ -54,6 +55,7 @@ describe("normalizeSettings", () => {
     });
     expect(settings.display.sidebarOpacity).toBe(0);
     expect(settings.display.surfaceOpacity).toBe(0);
+    expect(settings.display.cardOpacity).toBe(0);
     expect(settings.display.composerOpacity).toBe(0);
     expect(settings.display.menuOpacity).toBe(0);
     expect(settings.display.terminalOpacity).toBe(0);
