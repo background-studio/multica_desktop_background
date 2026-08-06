@@ -18,6 +18,8 @@ describe("renderer payload", () => {
     expect(payload).toContain("#root");
     expect(payload).toContain('[data-sidebar="sidebar"]');
     expect(payload).toContain(".bg-page-canvas");
+    expect(payload).toContain(".bg-page-canvas .bg-background");
+    expect(payload).toContain(".bg-card");
     expect(payload).toContain('[data-slot="sidebar-inner"]');
     expect(payload).toContain('[data-sidebar="menu-button"][data-active]');
     expect(payload).toContain('[data-sidebar="menu-button"]:hover');

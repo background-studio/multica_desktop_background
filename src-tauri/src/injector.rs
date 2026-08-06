@@ -404,7 +404,7 @@ const EARLY_TRANSPARENCY_SCRIPT: &str = r#"(() => {
   try {
     const style = document.createElement("style");
     style.id = "multica-background-early-transparency";
-    style.textContent = "html,body,#root,.bg-app-shell,[data-slot=sidebar-wrapper],[data-sidebar=sidebar],[data-slot=sidebar-inner],[data-sidebar=menu-button][data-active],[data-sidebar=menu-button]:hover,[data-sidebar=menu-button]:focus-visible,.bg-page-canvas,header,[role=button][aria-roledescription=sortable]>a[href*='/issues/']>[class~=bg-surface]{background:transparent!important;background-color:transparent!important}";
+    style.textContent = "html,body,#root,.bg-app-shell,[data-slot=sidebar-wrapper],[data-sidebar=sidebar],[data-slot=sidebar-inner],[data-sidebar=menu-button][data-active],[data-sidebar=menu-button]:hover,[data-sidebar=menu-button]:focus-visible,.bg-page-canvas,.bg-page-canvas .bg-background,.bg-card,header,[role=button][aria-roledescription=sortable]>a[href*='/issues/']>[class~=bg-surface]{background:transparent!important;background-color:transparent!important}";
     (document.documentElement || document).appendChild(style);
   } catch {}
 })()"#;

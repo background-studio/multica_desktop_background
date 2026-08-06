@@ -125,6 +125,8 @@ mod tests {
         assert!(payload.script.contains("multica-background-layer"));
         assert!(payload.script.contains("diffs-container"));
         assert!(payload.script.contains(r#"[data-sidebar=\"menu-button\"]:hover"#));
+        assert!(payload.script.contains(r#".bg-page-canvas .bg-background"#));
+        assert!(payload.script.contains(".bg-card"));
         assert!(payload.script.contains("data:image/png;base64,"));
         assert_eq!(payload.revision.len(), 64);
         let _ = fs::remove_dir_all(root);

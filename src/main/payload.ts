@@ -104,17 +104,30 @@ html.multica-background-active [data-slot="chat-input-surface"] {
   box-shadow: none !important;
 }
 
+/*
+ * Create Agent 等路由会在 bg-page-canvas 里再铺一层 bg-background 实底。
+ * 外层 canvas 已打雾，内层必须清空，否则整页变黑。
+ */
+html.multica-background-active .bg-page-canvas .bg-background {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
 /* Electron WCO 把原生窗口按钮叠在同一客户区；顶栏为其预留右侧安全区。 */
 html.multica-background-active.multica-background-wco header.relative.shrink-0.h-12 {
   box-sizing: border-box !important;
   padding-right: var(--cbg-wco-safe-right, 0px) !important;
 }
 
-/* 看板任务卡片：只调整卡片底色，文字、状态和拖拽命中保持完整不透明。 */
+/*
+ * 看板任务卡片 + 用量 / 运行时等 shadcn bg-card：
+ * 只调整底色，文字与交互保持完整不透明。
+ */
 html.multica-background-active
   [role="button"][aria-roledescription="sortable"]
   > a[href*="/issues/"]
-  > [class~="bg-surface"] {
+  > [class~="bg-surface"],
+html.multica-background-active .bg-card {
   background: color-mix(in srgb, var(--cbg-surface-color, #191919) calc(var(--cbg-card-opacity) * 100%), transparent) !important;
   background-color: color-mix(in srgb, var(--cbg-surface-color, #191919) calc(var(--cbg-card-opacity) * 100%), transparent) !important;
   box-shadow: none !important;
