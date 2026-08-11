@@ -147,10 +147,9 @@ async fn apply_via_ipc(app: AppHandle) -> Result<serde_json::Value, String> {
         state.active_payload()?
     };
     let controller = std::sync::Arc::clone(&state.controller);
-    let script = payload.script.clone();
-    let revision = payload.revision.clone();
+    let first_payload = payload.clone();
     let first = tauri::async_runtime::spawn_blocking(move || {
-        lock(&controller)?.apply(script, revision, false)
+        lock(&controller)?.apply(first_payload, false)
     })
     .await
     .map_err(|error| error.to_string())?;
@@ -160,7 +159,7 @@ async fn apply_via_ipc(app: AppHandle) -> Result<serde_json::Value, String> {
         Err(error) if error.contains("需要重启一次") => {
             let controller = std::sync::Arc::clone(&state.controller);
             let retry = tauri::async_runtime::spawn_blocking(move || {
-                lock(&controller)?.apply(payload.script, payload.revision, true)
+                lock(&controller)?.apply(payload, true)
             })
             .await
             .map_err(|error| error.to_string())?;

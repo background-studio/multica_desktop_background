@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::{fs, path::Path, sync::Arc};
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
@@ -12,6 +12,10 @@ mod generated {
 
 const REVIEW_SHADOW_STYLE_ID: &str = "multica-background-review-shadow-style";
 const MAX_INLINE_MEDIA_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_EARLY_INLINE_MEDIA_BYTES: usize = 192 * 1024;
+const MAX_EARLY_SCRIPT_BYTES: usize = 400 * 1024;
+const MEDIA_URL_SENTINEL: &str = "background-studio-media://pending";
+pub const PENDING_MEDIA_URL_KEY: &str = "__BACKGROUND_STUDIO_PENDING_MEDIA_URL__";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,9 +34,13 @@ struct PayloadConfig<'a> {
     revision: &'a str,
 }
 
+#[derive(Clone)]
 pub struct ActivePayload {
     pub script: String,
     pub revision: String,
+    pub media_bytes: Arc<[u8]>,
+    pub media_mime_type: String,
+    pub early_script: Option<String>,
 }
 
 fn digest(parts: &[&[u8]]) -> String {
@@ -41,6 +49,33 @@ fn digest(parts: &[&[u8]]) -> String {
         hasher.update(part);
     }
     format!("{:x}", hasher.finalize())
+}
+
+fn render_script(
+    media_url: &str,
+    media_kind: &MediaKind,
+    display: &DisplaySettings,
+    payload_revision: &str,
+) -> Result<String, String> {
+    let serialized = serde_json::to_string(&PayloadConfig {
+        media_url,
+        media_kind,
+        display,
+        revision: payload_revision,
+    })
+    .map_err(|error| error.to_string())?
+    .replace('<', "\\u003c");
+    let css =
+        serde_json::to_string(generated::BACKGROUND_CSS).map_err(|error| error.to_string())?;
+    let review_css =
+        serde_json::to_string(generated::REVIEW_SHADOW_CSS).map_err(|error| error.to_string())?;
+    let review_style_id =
+        serde_json::to_string(REVIEW_SHADOW_STYLE_ID).map_err(|error| error.to_string())?;
+    Ok(generated::PAYLOAD_TEMPLATE
+        .replace("${serialized}", &serialized)
+        .replace("${css}", &css)
+        .replace("${reviewShadowCss}", &review_css)
+        .replace("${reviewShadowStyleId}", &review_style_id))
 }
 
 pub fn build_active_payload(
@@ -60,7 +95,6 @@ pub fn build_active_payload(
         hasher.update(&bytes);
         format!("{:x}", hasher.finalize())
     };
-    let media_url = format!("data:{};base64,{}", media.mime_type, STANDARD.encode(&bytes));
     let revision_input = serde_json::to_vec(&RevisionInput {
         sha256: &file_digest,
         display,
@@ -73,26 +107,35 @@ pub fn build_active_payload(
         generated::BACKGROUND_CSS.as_bytes(),
         generated::REVIEW_SHADOW_CSS.as_bytes(),
     ]);
-    let serialized = serde_json::to_string(&PayloadConfig {
-        media_url: &media_url,
-        media_kind: &media.kind,
-        display,
-        revision: &payload_revision,
+    let sentinel_literal =
+        serde_json::to_string(MEDIA_URL_SENTINEL).map_err(|error| error.to_string())?;
+    let pending_expression = format!(
+        "window[{}]",
+        serde_json::to_string(PENDING_MEDIA_URL_KEY).map_err(|error| error.to_string())?
+    );
+    let inline_script = render_script(MEDIA_URL_SENTINEL, &media.kind, display, &payload_revision)?;
+    if !inline_script.contains(&sentinel_literal) {
+        return Err("背景媒体占位符生成失败。".to_string());
+    }
+    let script = inline_script.replacen(&sentinel_literal, &pending_expression, 1);
+    let early_script = if bytes.len() <= MAX_EARLY_INLINE_MEDIA_BYTES {
+        let media_url = format!(
+            "data:{};base64,{}",
+            media.mime_type,
+            STANDARD.encode(&bytes)
+        );
+        let candidate = render_script(&media_url, &media.kind, display, &payload_revision)?;
+        (candidate.len() <= MAX_EARLY_SCRIPT_BYTES).then_some(candidate)
+    } else {
+        None
+    };
+    Ok(ActivePayload {
+        script,
+        revision: payload_revision,
+        media_bytes: Arc::from(bytes),
+        media_mime_type: media.mime_type.clone(),
+        early_script,
     })
-    .map_err(|error| error.to_string())?
-    .replace('<', "\\u003c");
-    let css =
-        serde_json::to_string(generated::BACKGROUND_CSS).map_err(|error| error.to_string())?;
-    let review_css =
-        serde_json::to_string(generated::REVIEW_SHADOW_CSS).map_err(|error| error.to_string())?;
-    let review_style_id =
-        serde_json::to_string(REVIEW_SHADOW_STYLE_ID).map_err(|error| error.to_string())?;
-    let script = generated::PAYLOAD_TEMPLATE
-        .replace("${serialized}", &serialized)
-        .replace("${css}", &css)
-        .replace("${reviewShadowCss}", &review_css)
-        .replace("${reviewShadowStyleId}", &review_style_id);
-    Ok(ActivePayload { script, revision })
 }
 
 #[cfg(test)]
@@ -124,16 +167,55 @@ mod tests {
         let payload = build_active_payload(&item, &path, &DisplaySettings::default()).unwrap();
         assert!(payload.script.contains("multica-background-layer"));
         assert!(payload.script.contains("diffs-container"));
-        assert!(payload.script.contains(r#"[data-sidebar=\"menu-button\"]:hover"#));
+        assert!(payload
+            .script
+            .contains(r#"[data-sidebar=\"menu-button\"]:hover"#));
         assert!(payload.script.contains(r#".bg-page-canvas .bg-background"#));
         assert!(payload.script.contains(r#".bg-page-canvas .sticky::after"#));
         assert!(payload.script.contains(".pe-chat-launcher"));
-        assert!(payload.script.contains(r#"[role=\"radiogroup\"] [role=\"radio\"][class~=\"bg-muted\"]"#));
+        assert!(payload
+            .script
+            .contains(r#"[role=\"radiogroup\"] [role=\"radio\"][class~=\"bg-muted\"]"#));
         assert!(payload.script.contains("resize: none !important"));
         assert!(payload.script.contains("textarea::-webkit-resizer"));
         assert!(payload.script.contains(".bg-card"));
-        assert!(payload.script.contains("data:image/png;base64,"));
+        assert!(payload.script.contains(PENDING_MEDIA_URL_KEY));
+        assert!(!payload.script.contains("data:image/png;base64,"));
+        assert!(payload
+            .early_script
+            .as_deref()
+            .is_some_and(|script| script.contains("data:image/png;base64,")));
+        assert_eq!(payload.media_bytes.as_ref(), b"payload bytes");
         assert_eq!(payload.revision.len(), 64);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn keeps_large_media_out_of_cdp_script() {
+        let root = std::env::temp_dir().join(format!("multica-large-payload-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("large.png");
+        let bytes = vec![0x5a; 1024 * 1024];
+        fs::write(&path, &bytes).unwrap();
+        let item = MediaItem {
+            id: Uuid::new_v4().to_string(),
+            name: "large.png".to_string(),
+            kind: MediaKind::Image,
+            origin: MediaOrigin::Local,
+            file_name: "large.png".to_string(),
+            mime_type: "image/png".to_string(),
+            byte_size: bytes.len() as u64,
+            sha256: "large".to_string(),
+            source_url: None,
+            file_count: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            preview_url: None,
+        };
+        let payload = build_active_payload(&item, &path, &DisplaySettings::default()).unwrap();
+        assert_eq!(payload.media_bytes.len(), bytes.len());
+        assert!(payload.early_script.is_none());
+        assert!(payload.script.len() < MAX_EARLY_SCRIPT_BYTES);
+        assert!(!payload.script.contains("data:image/png;base64,"));
         let _ = fs::remove_dir_all(root);
     }
 }

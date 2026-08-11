@@ -232,11 +232,10 @@ async fn apply_live_generation(app: &AppHandle, generation: u64) -> Result<(), S
         return Ok(());
     }
     let controller = Arc::clone(&state.controller);
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        lock(&controller)?.apply(payload.script, payload.revision, false)
-    })
-    .await
-    .map_err(|error| error.to_string())?;
+    let result =
+        tauri::async_runtime::spawn_blocking(move || lock(&controller)?.apply(payload, false))
+            .await
+            .map_err(|error| error.to_string())?;
     let _ = state.refresh_runtime_status();
     result?;
     Ok(())
@@ -309,6 +308,18 @@ async fn refresh_dynamic_item(state: &StudioState, id: &str) -> Result<(), Strin
     let download = download_remote_media(&source_url, &temporary_directory).await?;
     lock(&state.library)?.refresh_with_download(id, download)?;
     Ok(())
+}
+
+fn advance_folder_source(
+    library: &Mutex<MediaLibrary>,
+    id: &str,
+    order: models::SlideshowOrder,
+) -> Result<(), String> {
+    let mut library = lock(library)?;
+    let item = library
+        .get_by_id(id)
+        .ok_or_else(|| "媒体项目不存在。".to_string())?;
+    library.advance_folder_cursor(&item, order)
 }
 
 async fn advance_slideshow(app: AppHandle) -> Result<(), String> {
@@ -387,9 +398,7 @@ async fn advance_slideshow(app: AppHandle) -> Result<(), String> {
                 let same_item = settings.active_media_id.as_deref() == Some(next_id.as_str());
                 if same_item {
                     let order = settings.slideshow.order.clone();
-                    if let Some(item) = lock(&state.library)?.get_by_id(&next_id) {
-                        let _ = lock(&state.library)?.advance_folder_cursor(&item, order);
-                    }
+                    advance_folder_source(&state.library, &next_id, order)?;
                 }
             }
             _ => {}
@@ -544,10 +553,7 @@ async fn refresh_media(
         }
         models::MediaOrigin::Folder => {
             let order = lock(&state.settings)?.value().slideshow.order;
-            let item = lock(&state.library)?
-                .get_by_id(&id)
-                .ok_or_else(|| "媒体项目不存在。".to_string())?;
-            lock(&state.library)?.advance_folder_cursor(&item, order)?;
+            advance_folder_source(&state.library, &id, order)?;
         }
         _ => return Err("该媒体不支持刷新。".to_string()),
     }
@@ -641,19 +647,15 @@ async fn apply_background(
     let restart_requested = request
         .and_then(|request| request.restart_existing)
         .unwrap_or(false);
-    let run_apply = |restart_existing: bool, script: String, revision: String| {
+    let run_apply = |restart_existing: bool, payload: ActivePayload| {
         let controller = Arc::clone(&state.controller);
         tauri::async_runtime::spawn_blocking(move || {
-            lock(&controller)?.apply(script, revision, restart_existing)
+            lock(&controller)?.apply(payload, restart_existing)
         })
     };
-    let first = run_apply(
-        restart_requested,
-        payload.script.clone(),
-        payload.revision.clone(),
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+    let first = run_apply(restart_requested, payload.clone())
+        .await
+        .map_err(|error| error.to_string())?;
     let _ = state.refresh_runtime_status();
     if let Err(error) = first {
         if !restart_requested && error.contains("需要重启一次") {
@@ -671,7 +673,7 @@ async fn apply_background(
             if !confirmed {
                 return state.emit_snapshot(&app);
             }
-            let retry = run_apply(true, payload.script, payload.revision)
+            let retry = run_apply(true, payload)
                 .await
                 .map_err(|error| error.to_string())?;
             let _ = state.refresh_runtime_status();
@@ -751,9 +753,9 @@ pub fn run() {
             let state = StudioState::load()
                 .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
             if let Ok(payload) = state.active_payload() {
-                match lock(&state.controller).and_then(|mut controller| {
-                    controller.reconnect_saved(payload.script, payload.revision)
-                }) {
+                match lock(&state.controller)
+                    .and_then(|mut controller| controller.reconnect_saved(payload))
+                {
                     Ok(true) => {}
                     Ok(false) => {
                         eprintln!("启动时未恢复背景会话：没有可用的 Multica CDP 运行时。");

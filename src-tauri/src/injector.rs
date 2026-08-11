@@ -9,10 +9,16 @@ use std::{
     time::Duration,
 };
 
+use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tungstenite::{connect, stream::MaybeTlsStream, Message, WebSocket};
 use url::Url;
+
+use crate::payload::{ActivePayload, PENDING_MEDIA_URL_KEY};
+
+const MEDIA_CHUNK_BYTES: usize = 192 * 1024;
+const PENDING_MEDIA_PARTS_KEY: &str = "__BACKGROUND_STUDIO_PENDING_MEDIA_PARTS__";
 
 const REMOVE_RENDERER_PAYLOAD: &str = r#"(() => {
   const state = window.__MULTICA_BACKGROUND_STUDIO__;
@@ -298,9 +304,14 @@ impl CdpSession {
                 response,
             })
             .map_err(|_| "CDP 会话已关闭。".to_string())?;
-        receiver
-            .recv_timeout(Duration::from_secs(timeout_secs))
-            .map_err(|_| format!("CDP 命令超时：{method}（已等待 {timeout_secs}s）"))?
+        match receiver.recv_timeout(Duration::from_secs(timeout_secs)) {
+            Ok(result) => result,
+            Err(_) => {
+                // 超时后的 socket 仍可能在处理旧命令，不能继续向同一 worker 排队。
+                self.closed.store(true, Ordering::Release);
+                Err(format!("CDP 命令超时：{method}（已等待 {timeout_secs}s）"))
+            }
+        }
     }
 
     fn evaluate(&self, expression: &str) -> Result<Value, String> {
@@ -329,6 +340,44 @@ impl CdpSession {
             .cloned()
             .unwrap_or(Value::Null))
     }
+}
+
+fn clear_pending_media(session: &CdpSession, revoke_url: bool) {
+    let parts_key = serde_json::to_string(PENDING_MEDIA_PARTS_KEY).expect("key is serializable");
+    let url_key = serde_json::to_string(PENDING_MEDIA_URL_KEY).expect("key is serializable");
+    let revoke = if revoke_url {
+        format!(
+            "const url=window[{url_key}];if(typeof url==='string'&&url.startsWith('blob:'))URL.revokeObjectURL(url);"
+        )
+    } else {
+        String::new()
+    };
+    let _ = session.evaluate(&format!(
+        "(()=>{{{revoke}delete window[{parts_key}];delete window[{url_key}];return true;}})()"
+    ));
+}
+
+fn upload_media(session: &CdpSession, payload: &ActivePayload) -> Result<(), String> {
+    let parts_key =
+        serde_json::to_string(PENDING_MEDIA_PARTS_KEY).map_err(|error| error.to_string())?;
+    let url_key =
+        serde_json::to_string(PENDING_MEDIA_URL_KEY).map_err(|error| error.to_string())?;
+    session.evaluate(&format!(
+        "(()=>{{const url=window[{url_key}];if(typeof url==='string'&&url.startsWith('blob:'))URL.revokeObjectURL(url);window[{url_key}]=undefined;window[{parts_key}]=[];return true;}})()"
+    ))?;
+    for chunk in payload.media_bytes.chunks(MEDIA_CHUNK_BYTES) {
+        let encoded =
+            serde_json::to_string(&STANDARD.encode(chunk)).map_err(|error| error.to_string())?;
+        session.evaluate(&format!(
+            "(()=>{{const binary=atob({encoded});const bytes=new Uint8Array(binary.length);for(let i=0;i<binary.length;i+=1)bytes[i]=binary.charCodeAt(i);window[{parts_key}].push(bytes);return bytes.length;}})()"
+        ))?;
+    }
+    let mime =
+        serde_json::to_string(&payload.media_mime_type).map_err(|error| error.to_string())?;
+    session.evaluate(&format!(
+        "(()=>{{const parts=window[{parts_key}];if(!Array.isArray(parts))throw new Error('背景媒体分块状态丢失');window[{url_key}]=URL.createObjectURL(new Blob(parts,{{type:{mime}}}));delete window[{parts_key}];return window[{url_key}];}})()"
+    ))?;
+    Ok(())
 }
 
 impl Drop for CdpSession {
@@ -360,8 +409,7 @@ struct InjectorInner {
     port: u16,
     browser_id: String,
     sessions: HashMap<String, ManagedSession>,
-    payload: Option<String>,
-    revision: Option<String>,
+    payload: Option<ActivePayload>,
     paused: bool,
 }
 
@@ -397,9 +445,6 @@ fn remove_from_session(managed: &mut ManagedSession) {
     managed.revision = None;
 }
 
-/// 超过该体积时不再把完整媒体脚本注册为 early script（会再复制一份经 CDP 发送）。
-const LARGE_PAYLOAD_EARLY_BYTES: usize = 400 * 1024;
-
 const EARLY_TRANSPARENCY_SCRIPT: &str = r#"(() => {
   try {
     const style = document.createElement("style");
@@ -409,11 +454,8 @@ const EARLY_TRANSPARENCY_SCRIPT: &str = r#"(() => {
   } catch {}
 })()"#;
 
-fn apply_to_session(
-    managed: &mut ManagedSession,
-    payload: &str,
-    revision: &str,
-) -> Result<(), String> {
+fn apply_to_session(managed: &mut ManagedSession, payload: &ActivePayload) -> Result<(), String> {
+    let revision = &payload.revision;
     if managed.revision.as_deref() == Some(revision) {
         return Ok(());
     }
@@ -426,12 +468,11 @@ fn apply_to_session(
     managed
         .session
         .send("Page.setBypassCSP", json!({ "enabled": true }))?;
-    let early_source = if payload.len() > LARGE_PAYLOAD_EARLY_BYTES {
-        // 大媒体只发一次 evaluate；early 仅透明化，避免 5MB+ 脚本双倍堵死 WebSocket。
-        EARLY_TRANSPARENCY_SCRIPT.to_string()
-    } else {
-        early_payload_for(payload, revision)
-    };
+    let early_source = payload
+        .early_script
+        .as_deref()
+        .map(|script| early_payload_for(script, revision))
+        .unwrap_or_else(|| EARLY_TRANSPARENCY_SCRIPT.to_string());
     let early = managed.session.send(
         "Page.addScriptToEvaluateOnNewDocument",
         json!({ "source": early_source }),
@@ -440,7 +481,13 @@ fn apply_to_session(
         .get("identifier")
         .and_then(Value::as_str)
         .map(str::to_string);
-    managed.session.evaluate(payload)?;
+    if let Err(error) = upload_media(&managed.session, payload)
+        .and_then(|_| managed.session.evaluate(&payload.script).map(|_| ()))
+    {
+        clear_pending_media(&managed.session, true);
+        return Err(error);
+    }
+    clear_pending_media(&managed.session, false);
     managed.revision = Some(revision.to_string());
     Ok(())
 }
@@ -485,13 +532,12 @@ fn sync_inner(inner: &Arc<Mutex<InjectorInner>>, target_count: &AtomicUsize, for
     }
     if !inner.paused {
         let payload = inner.payload.clone();
-        let revision = inner.revision.clone();
-        if let (Some(payload), Some(revision)) = (payload, revision) {
+        if let Some(payload) = payload {
             for managed in inner.sessions.values_mut() {
                 if force {
                     managed.revision = None;
                 }
-                if let Err(error) = apply_to_session(managed, &payload, &revision) {
+                if let Err(error) = apply_to_session(managed, &payload) {
                     eprintln!("CDP 注入失败: {error}");
                 }
             }
@@ -515,7 +561,6 @@ impl InjectorEngine {
                 browser_id,
                 sessions: HashMap::new(),
                 payload: None,
-                revision: None,
                 paused: false,
             })),
             target_count: Arc::new(AtomicUsize::new(0)),
@@ -524,14 +569,13 @@ impl InjectorEngine {
         }
     }
 
-    pub fn start(&mut self, payload: String, revision: String) -> Result<(), String> {
+    pub fn start(&mut self, payload: ActivePayload) -> Result<(), String> {
         {
             let mut inner = self
                 .inner
                 .lock()
                 .map_err(|_| "CDP 注入状态锁已损坏。".to_string())?;
             inner.payload = Some(payload);
-            inner.revision = Some(revision);
             inner.paused = false;
         }
         sync_inner(&self.inner, &self.target_count, false);
@@ -556,14 +600,13 @@ impl InjectorEngine {
         Ok(())
     }
 
-    pub fn update(&self, payload: String, revision: String) -> Result<(), String> {
+    pub fn update(&self, payload: ActivePayload) -> Result<(), String> {
         {
             let mut inner = self
                 .inner
                 .lock()
                 .map_err(|_| "CDP 注入状态锁已损坏。".to_string())?;
             inner.payload = Some(payload);
-            inner.revision = Some(revision);
             inner.paused = false;
         }
         sync_inner(&self.inner, &self.target_count, true);
