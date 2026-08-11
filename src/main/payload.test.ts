@@ -36,6 +36,8 @@ describe("renderer payload", () => {
     expect(payload).toContain("--cbg-card-opacity");
     expect(payload).toContain('aria-roledescription="sortable"');
     expect(payload).toContain('a[href*="/issues/"]');
+    expect(payload).toContain('h3[data-orientation="vertical"][data-index][class~="bg-muted"]');
+    expect(payload).toContain('aside[class~="bg-surface"][class~="border-surface-border"]');
     expect(payload).toContain("windowControlsOverlay");
     expect(payload).toContain("geometrychange");
     expect(payload).toContain("multica-background-wco");

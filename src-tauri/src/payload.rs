@@ -179,6 +179,12 @@ mod tests {
         assert!(payload.script.contains("resize: none !important"));
         assert!(payload.script.contains("textarea::-webkit-resizer"));
         assert!(payload.script.contains(".bg-card"));
+        assert!(payload.script.contains(
+            r#"h3[data-orientation=\"vertical\"][data-index][class~=\"bg-muted\"]"#
+        ));
+        assert!(payload.script.contains(
+            r#"aside[class~=\"bg-surface\"][class~=\"border-surface-border\"]"#
+        ));
         assert!(payload.script.contains(PENDING_MEDIA_URL_KEY));
         assert!(!payload.script.contains("data:image/png;base64,"));
         assert!(payload

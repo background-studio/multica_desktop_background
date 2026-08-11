@@ -166,13 +166,17 @@ html.multica-background-active.multica-background-wco header.relative.shrink-0.h
 }
 
 /*
- * 看板任务卡片 + 用量 / 运行时等 shadcn bg-card：
+ * 看板任务卡片 + 任务列表状态条 + 智能体详情侧卡 + 用量 / 运行时等 shadcn bg-card：
  * 只调整底色，文字与交互保持完整不透明。
  */
 html.multica-background-active
   [role="button"][aria-roledescription="sortable"]
   > a[href*="/issues/"]
   > [class~="bg-surface"],
+html.multica-background-active
+  h3[data-orientation="vertical"][data-index][class~="bg-muted"],
+html.multica-background-active
+  aside[class~="bg-surface"][class~="border-surface-border"],
 html.multica-background-active .bg-card {
   background: color-mix(in srgb, var(--cbg-surface-color, #191919) calc(var(--cbg-card-opacity) * 100%), transparent) !important;
   background-color: color-mix(in srgb, var(--cbg-surface-color, #191919) calc(var(--cbg-card-opacity) * 100%), transparent) !important;
