@@ -1,6 +1,6 @@
 [package]
 name = "multica-background-studio"
-version = "0.2.3"
+version = "0.2.4"
 description = "A reversible background manager for the Multica Windows desktop app."
 authors = ["Multica Background Studio contributors"]
 license = "MIT"
