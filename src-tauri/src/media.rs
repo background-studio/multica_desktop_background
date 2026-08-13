@@ -4,7 +4,7 @@ use std::{
     io::Read,
     path::{Component, Path, PathBuf},
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use chrono::Utc;
@@ -145,6 +145,13 @@ fn sha256_text(value: &str) -> String {
 }
 
 const FOLDER_SENTINEL: &str = "__folder__";
+/// 同一次预览+应用不要连扫两遍；过了这点时间按目录可能已变处理。
+const FOLDER_LISTING_TTL: Duration = Duration::from_secs(2);
+
+struct CachedFolderListing {
+    files: Arc<[PathBuf]>,
+    scanned_at: Instant,
+}
 
 #[derive(Clone, Debug)]
 pub struct ResolvedMedia {
@@ -217,8 +224,8 @@ pub struct MediaLibrary {
     folder_cursors: HashMap<String, usize>,
     /// 文件夹源在随机模式下当前已经选中的文件，保证预览和 Multica 使用同一张图。
     folder_selections: HashMap<String, ResolvedMedia>,
-    /// 文件夹文件列表的会话级索引。仅首次使用或导入时扫描，换图和轮播都复用它。
-    folder_listings: HashMap<String, Arc<[PathBuf]>>,
+    /// 文件夹文件列表。过期后换图、轮播、打开面板都会重新扫描。
+    folder_listings: HashMap<String, CachedFolderListing>,
 }
 
 impl MediaLibrary {
@@ -330,6 +337,14 @@ impl MediaLibrary {
         Ok(path)
     }
 
+    fn folder_display_name(folder: &Path, count: u64) -> String {
+        let folder_name = folder
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("未命名文件夹");
+        safe_display_name(&format!("{folder_name}（{count}）"))
+    }
+
     pub fn list_folder_media(folder: &Path) -> Result<Vec<PathBuf>, String> {
         let root = folder
             .canonicalize()
@@ -360,15 +375,59 @@ impl MediaLibrary {
 
     fn folder_files_cached(&mut self, item: &MediaItem) -> Result<Arc<[PathBuf]>, String> {
         if let Some(cached) = self.folder_listings.get(&item.id) {
-            return Ok(Arc::clone(cached));
+            if cached.scanned_at.elapsed() < FOLDER_LISTING_TTL {
+                return Ok(Arc::clone(&cached.files));
+            }
         }
+        self.rescan_folder_listing(item)
+    }
+
+    fn rescan_folder_listing(&mut self, item: &MediaItem) -> Result<Arc<[PathBuf]>, String> {
         let folder = Self::folder_path_for(item)?;
         let files: Arc<[PathBuf]> = Self::list_folder_media(&folder)?.into();
+        let count = files.len() as u64;
         self.folder_listings.insert(
             item.id.clone(),
-            Arc::clone(&files),
+            CachedFolderListing {
+                files: Arc::clone(&files),
+                scanned_at: Instant::now(),
+            },
         );
+        let stored_count = self
+            .items
+            .iter()
+            .find(|candidate| candidate.id == item.id)
+            .and_then(|candidate| candidate.file_count);
+        if stored_count != Some(count) {
+            if let Some(stored) = self.items.iter_mut().find(|candidate| candidate.id == item.id) {
+                stored.file_count = Some(count);
+                stored.name = Self::folder_display_name(&folder, count);
+            }
+            self.save_catalog()?;
+        }
         Ok(files)
+    }
+
+    pub fn refresh_folder_sources(&mut self) {
+        let folder_items: Vec<MediaItem> = self
+            .items
+            .iter()
+            .filter(|item| item.origin == MediaOrigin::Folder)
+            .cloned()
+            .collect();
+        for item in folder_items {
+            let _ = self.folder_files_cached(&item);
+        }
+    }
+
+    #[cfg(test)]
+    fn expire_folder_listings(&mut self) {
+        let stale = Instant::now()
+            .checked_sub(FOLDER_LISTING_TTL + Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        for listing in self.folder_listings.values_mut() {
+            listing.scanned_at = stale;
+        }
     }
 
     fn resolve_folder_media(
@@ -382,11 +441,20 @@ impl MediaLibrary {
         }
         let path = match order {
             SlideshowOrder::Random => {
-                if let Some(selected) = self.folder_selections.get(&item.id) {
-                    let resolved = Self::resolve_folder_file(selected.path.clone())?;
-                    self.folder_selections
-                        .insert(item.id.clone(), resolved.clone());
-                    return Ok(resolved);
+                if let Some(selected_path) = self
+                    .folder_selections
+                    .get(&item.id)
+                    .map(|selected| selected.path.clone())
+                {
+                    let still_listed = files.iter().any(|path| path == &selected_path);
+                    if still_listed {
+                        if let Ok(resolved) = Self::resolve_folder_file(selected_path) {
+                            self.folder_selections
+                                .insert(item.id.clone(), resolved.clone());
+                            return Ok(resolved);
+                        }
+                    }
+                    self.folder_selections.remove(&item.id);
                 }
                 let seed = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -645,14 +713,10 @@ impl MediaLibrary {
                 }],
             };
         }
-        let folder_name = root
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("未命名文件夹");
         let count = files.len() as u64;
         let item = MediaItem {
             id: Uuid::new_v4().to_string(),
-            name: safe_display_name(&format!("{folder_name}（{count}）")),
+            name: Self::folder_display_name(&root, count),
             kind: MediaKind::Image,
             origin: MediaOrigin::Folder,
             file_name: FOLDER_SENTINEL.to_string(),
@@ -675,8 +739,13 @@ impl MediaLibrary {
                 }],
             };
         }
-        self.folder_listings
-            .insert(item.id.clone(), Arc::from(files));
+        self.folder_listings.insert(
+            item.id.clone(),
+            CachedFolderListing {
+                files: Arc::from(files),
+                scanned_at: Instant::now(),
+            },
+        );
         ImportResult {
             added: vec![item],
             skipped: Vec::new(),
@@ -918,7 +987,7 @@ mod tests {
     }
 
     #[test]
-    fn folder_listing_is_reused_for_the_entire_session() {
+    fn folder_listing_is_reused_within_ttl() {
         let root = std::env::temp_dir().join(format!("codex-folder-cache-{}", Uuid::new_v4()));
         let source_dir = root.join("wallpapers");
         fs::create_dir_all(&source_dir).unwrap();
@@ -932,7 +1001,7 @@ mod tests {
         let mut library = MediaLibrary::load(&root.join("data")).unwrap();
         let mut imported = library.import_folder(&source_dir);
         let item = imported.added.remove(0);
-        assert_eq!(library.folder_listings[&item.id].len(), 2);
+        assert_eq!(library.folder_listings[&item.id].files.len(), 2);
 
         File::create(source_dir.join("added-later.png"))
             .unwrap()
@@ -945,11 +1014,93 @@ mod tests {
             .resolve_playback(&item, SlideshowOrder::Sequential, false)
             .unwrap();
 
-        assert_eq!(library.folder_listings[&item.id].len(), 2);
+        assert_eq!(library.folder_listings[&item.id].files.len(), 2);
+        assert_eq!(library.get_by_id(&item.id).unwrap().file_count, Some(2));
         assert_ne!(
             selected.path.file_name().and_then(|name| name.to_str()),
             Some("added-later.png")
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn folder_listing_picks_up_changes_after_ttl() {
+        let root = std::env::temp_dir().join(format!("codex-folder-refresh-{}", Uuid::new_v4()));
+        let source_dir = root.join("wallpapers");
+        fs::create_dir_all(&source_dir).unwrap();
+        for index in 0..2 {
+            let path = source_dir.join(format!("bg-{index}.png"));
+            File::create(&path)
+                .unwrap()
+                .write_all(&png_header())
+                .unwrap();
+        }
+        let mut library = MediaLibrary::load(&root.join("data")).unwrap();
+        let mut imported = library.import_folder(&source_dir);
+        let item = imported.added.remove(0);
+
+        File::create(source_dir.join("added-later.png"))
+            .unwrap()
+            .write_all(&png_header())
+            .unwrap();
+        library.expire_folder_listings();
+        library.refresh_folder_sources();
+
+        let updated = library.get_by_id(&item.id).unwrap();
+        assert_eq!(updated.file_count, Some(3));
+        assert!(updated.name.contains("（3）"));
+        assert_eq!(library.folder_listings[&item.id].files.len(), 3);
+        assert!(library.folder_listings[&item.id]
+            .files
+            .iter()
+            .any(|path| path.file_name().and_then(|name| name.to_str()) == Some("added-later.png")));
+
+        fs::remove_file(source_dir.join("bg-0.png")).unwrap();
+        library.expire_folder_listings();
+        library.refresh_folder_sources();
+        let updated = library.get_by_id(&item.id).unwrap();
+        assert_eq!(updated.file_count, Some(2));
+        assert!(updated.name.contains("（2）"));
+        assert_eq!(library.folder_listings[&item.id].files.len(), 2);
+
+        fs::remove_file(source_dir.join("bg-1.png")).unwrap();
+        fs::remove_file(source_dir.join("added-later.png")).unwrap();
+        library.expire_folder_listings();
+        let error = library
+            .resolve_playback(&item, SlideshowOrder::Sequential, false)
+            .unwrap_err();
+        assert!(error.contains("没有支持的图片或视频"));
+        assert_eq!(library.get_by_id(&item.id).unwrap().file_count, Some(0));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn random_folder_skips_deleted_selection() {
+        let root = std::env::temp_dir().join(format!("codex-folder-deleted-{}", Uuid::new_v4()));
+        let source_dir = root.join("wallpapers");
+        fs::create_dir_all(&source_dir).unwrap();
+        for index in 0..2 {
+            let path = source_dir.join(format!("bg-{index}.png"));
+            File::create(&path)
+                .unwrap()
+                .write_all(&png_header())
+                .unwrap();
+        }
+        let mut library = MediaLibrary::load(&root.join("data")).unwrap();
+        let mut imported = library.import_folder(&source_dir);
+        let item = imported.added.remove(0);
+        let first = library
+            .resolve_playback(&item, SlideshowOrder::Random, false)
+            .unwrap();
+        fs::remove_file(&first.path).unwrap();
+        library.expire_folder_listings();
+        let next = library
+            .resolve_playback(&item, SlideshowOrder::Random, false)
+            .unwrap();
+        assert_ne!(next.path, first.path);
+        assert!(next.path.is_file());
+        assert_eq!(library.get_by_id(&item.id).unwrap().file_count, Some(1));
         let _ = fs::remove_dir_all(root);
     }
 }

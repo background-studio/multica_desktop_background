@@ -105,7 +105,8 @@ impl StudioState {
 
     fn snapshot(&self) -> Result<AppSnapshot, String> {
         let settings = lock(&self.settings)?.value();
-        let library = lock(&self.library)?;
+        let mut library = lock(&self.library)?;
+        library.refresh_folder_sources();
         let media_server = lock(&self.media_server)?;
         let items = library
             .items()
