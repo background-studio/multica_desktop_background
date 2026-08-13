@@ -185,6 +185,11 @@ mod tests {
         assert!(payload.script.contains(
             r#"aside[class~=\"bg-surface\"][class~=\"border-surface-border\"]"#
         ));
+        assert!(payload.script.contains(
+            r#"[role=\"dialog\"][class~=\"fixed\"][class~=\"inset-0\"]"#
+        ));
+        assert!(payload.script.contains(r#"[role=\"dialog\"] [class~=\"max-w-6xl\"]"#));
+        assert!(payload.script.contains(r#"[class~=\"bg-muted/30\"]"#));
         assert!(payload.script.contains(PENDING_MEDIA_URL_KEY));
         assert!(!payload.script.contains("data:image/png;base64,"));
         assert!(payload

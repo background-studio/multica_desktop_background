@@ -192,6 +192,33 @@ html.multica-background-active .bg-surface-raised {
   backdrop-filter: none !important;
 }
 
+/*
+ * 附件二级预览（AttachmentPreviewModal）把 role=dialog 打在铺满窗口的遮罩上
+ *（fixed inset-0 + 原生 bg-black/80），不是小确认框那张卡。
+ * 上面的菜单规则会把整层涂成近实底，壁纸和侧栏都看不见。
+ * 遮罩只留点击关闭，不再铺色；中间 max-w-6xl 卡片跟主画布走同一层页面雾，
+ * 内层 bg-background / 顶栏 bg-muted/30 / iframe 实底清掉，避免叠两层。
+ */
+html.multica-background-active [role="dialog"][class~="fixed"][class~="inset-0"] {
+  background: transparent !important;
+  background-color: transparent !important;
+  backdrop-filter: none !important;
+}
+
+html.multica-background-active [role="dialog"] [class~="max-w-6xl"] {
+  background: color-mix(in srgb, var(--cbg-surface-color, #191919) calc(var(--cbg-surface-opacity) * 28%), transparent) !important;
+  background-color: color-mix(in srgb, var(--cbg-surface-color, #191919) calc(var(--cbg-surface-opacity) * 28%), transparent) !important;
+  backdrop-filter: none !important;
+  box-shadow: none !important;
+}
+
+html.multica-background-active [role="dialog"] [class~="max-w-6xl"] .bg-background,
+html.multica-background-active [role="dialog"] [class~="max-w-6xl"] iframe,
+html.multica-background-active [role="dialog"] [class~="max-w-6xl"] [class~="bg-muted/30"] {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
 html.multica-background-dark #multica-background-layer {
   background-color: transparent;
 }

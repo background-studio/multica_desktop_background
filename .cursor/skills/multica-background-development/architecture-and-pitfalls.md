@@ -242,6 +242,16 @@ sortable issue 链接内的 `bg-surface`。
 处理：`[role="radiogroup"] [role="radio"][class~="bg-muted"]` / `:hover` 跟随
 `--cbg-surface-opacity`（`* 100%`）；选中态仍靠 radio 圆点。
 
+### 附件二级预览整块实黑、看不到壁纸
+
+原因：`AttachmentPreviewModal` 把 `role="dialog"` 打在铺满窗口的遮罩上
+（`fixed inset-0 bg-black/80`）。菜单规则按 `* 100%` 给所有 `[role="dialog"]`
+涂近实底（默认菜单透明度 0.9），中间 `max-w-6xl` 卡片再铺一层 `bg-background`
+实色，壁纸被盖死。小确认框才是 `fixed top-1/2` 的那张卡。
+
+处理：`inset-0` 遮罩强制透明；`max-w-6xl` 卡片跟随 `--cbg-surface-opacity`
+（`* 28%`）；内层 `.bg-background` / `bg-muted/30` / `iframe` 清空。
+
 ### 创建智能体「指令」框右下角小黑块
 
 原因：描述/指令 `textarea` 开了 `resize: vertical`，Chromium 原生

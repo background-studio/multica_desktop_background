@@ -42,6 +42,9 @@ describe("renderer payload", () => {
     expect(payload).toContain("geometrychange");
     expect(payload).toContain("multica-background-wco");
     expect(payload).toContain("[role=");
+    expect(payload).toContain('[role="dialog"][class~="fixed"][class~="inset-0"]');
+    expect(payload).toContain('[role="dialog"] [class~="max-w-6xl"]');
+    expect(payload).toContain('[class~="bg-muted/30"]');
     expect(payload).toContain("syncFullWindowMedia");
     expect(payload).not.toContain("outerHeight");
     expect(payload).not.toContain("chromeH");

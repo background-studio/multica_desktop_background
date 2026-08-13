@@ -101,8 +101,22 @@ Multica 更新后 DOM 可能变；改样式前必须再用 CDP 核对，不要�
 
 ### 弹出层
 
-- `[role="dialog"]`、`[role="menu"]`、`[role="listbox"]`、`.bg-surface-raised`
+- 小确认框 / 菜单：`[role="dialog"]`（内容卡，带 `top-1/2` 居中，没有 `inset-0`）、
+  `[role="menu"]`、`[role="listbox"]`、`.bg-surface-raised`
 - 透明度：`--cbg-menu-opacity`，打底 `* 100%`
+
+### 附件二级预览（AttachmentPreviewModal）
+
+- 用户入口：任务/聊天里点 markdown、图片、PDF 等附件，中间弹出的大预览
+  （文件名 + MIME、下载、关闭）。
+- 稳定入口（asar `AttachmentPreviewModal`，portal 到 `document.body`）：
+  - 遮罩：`[role="dialog"][class~="fixed"][class~="inset-0"]`
+    （原生 `bg-black/80`；**不要**走菜单实底）
+  - 卡片：`[role="dialog"] [class~="max-w-6xl"]`
+    （`rounded-lg bg-background shadow-xl`，约 90vh）
+  - 内层必须清：卡片里的 `.bg-background`、顶栏 `[class~="bg-muted/30"]`、`iframe`
+- 透明度：卡片跟主画布走 `--cbg-surface-opacity` `* 28%`；遮罩透明
+- 不要误伤小 dialog：那些是 `fixed top-1/2 left-1/2`，没有 `inset-0`
 
 ## 透明度归属
 
@@ -112,7 +126,8 @@ Multica 更新后 DOM 可能变；改样式前必须再用 CDP 核对，不要�
 | 侧栏选中/悬停 | `--cbg-sidebar-opacity` | `[data-sidebar="menu-button"][data-active]` / `:hover` / `:focus-visible` | `* 100%` |
 | 顶栏与页面 | `--cbg-surface-opacity` | `.bg-page-canvas`、`header`、`[data-slot="card"]`、`[data-slot="chat-input-surface"]`、`.pe-chat-launcher` | `* 28%` |
 | 任务卡片 | `--cbg-card-opacity` | sortable issue 卡片内 `[class~="bg-surface"]` | `* 100%` |
-| 弹出菜单 | `--cbg-menu-opacity` | dialog/menu/listbox、`.bg-surface-raised` | `* 100%` |
+| 弹出菜单 | `--cbg-menu-opacity` | 小 dialog（非 `inset-0`）、menu/listbox、`.bg-surface-raised` | `* 100%` |
+| 附件二级预览 | `--cbg-surface-opacity` | `[role="dialog"] [class~="max-w-6xl"]`；遮罩 `inset-0` 透明 | 卡片 `* 28%` |
 | 底色遮罩 | overlay 设置 | `#multica-background-overlay` | 直接 opacity |
 | 媒体 | `--cbg-opacity` × 路由强度 | `#multica-background-layer` | — |
 
