@@ -1,6 +1,6 @@
 {
   "name": "multica-background-studio",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "private": true,
   "description": "A reversible background manager for the Multica Windows desktop app.",
   "author": "Multica Background Studio contributors",
