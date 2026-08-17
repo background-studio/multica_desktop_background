@@ -346,9 +346,7 @@ impl MediaLibrary {
     }
 
     pub fn list_folder_media(folder: &Path) -> Result<Vec<PathBuf>, String> {
-        let root = folder
-            .canonicalize()
-            .map_err(|error| error.to_string())?;
+        let root = folder.canonicalize().map_err(|error| error.to_string())?;
         let mut pending = VecDeque::from([root]);
         let mut files = Vec::new();
         while let Some(directory) = pending.pop_front() {
@@ -399,7 +397,11 @@ impl MediaLibrary {
             .find(|candidate| candidate.id == item.id)
             .and_then(|candidate| candidate.file_count);
         if stored_count != Some(count) {
-            if let Some(stored) = self.items.iter_mut().find(|candidate| candidate.id == item.id) {
+            if let Some(stored) = self
+                .items
+                .iter_mut()
+                .find(|candidate| candidate.id == item.id)
+            {
                 stored.file_count = Some(count);
                 stored.name = Self::folder_display_name(&folder, count);
             }
@@ -463,8 +465,7 @@ impl MediaLibrary {
                 files[(seed % files.len() as u128) as usize].clone()
             }
             SlideshowOrder::Sequential => {
-                files[self.folder_cursors.get(&item.id).copied().unwrap_or(0) % files.len()]
-                    .clone()
+                files[self.folder_cursors.get(&item.id).copied().unwrap_or(0) % files.len()].clone()
             }
         };
         let resolved = Self::resolve_folder_file(path)?;
@@ -682,7 +683,8 @@ impl MediaLibrary {
         }
         let root_key = root.to_string_lossy().into_owned();
         if let Some(existing) = self.items.iter().find(|item| {
-            item.origin == MediaOrigin::Folder && item.source_url.as_deref() == Some(root_key.as_str())
+            item.origin == MediaOrigin::Folder
+                && item.source_url.as_deref() == Some(root_key.as_str())
         }) {
             return ImportResult {
                 added: Vec::new(),
@@ -936,7 +938,11 @@ mod tests {
         assert_eq!(imported.added.len(), 1);
         assert_eq!(imported.added[0].origin, MediaOrigin::Folder);
         assert_eq!(imported.added[0].file_count, Some(3));
-        assert!(imported.added[0].source_url.as_ref().unwrap().contains("wallpapers"));
+        assert!(imported.added[0]
+            .source_url
+            .as_ref()
+            .unwrap()
+            .contains("wallpapers"));
         // 受管 media 目录不应出现用户原图副本。
         let managed = fs::read_dir(&library.media_directory).unwrap().count();
         assert_eq!(managed, 0);
@@ -1050,10 +1056,13 @@ mod tests {
         assert_eq!(updated.file_count, Some(3));
         assert!(updated.name.contains("（3）"));
         assert_eq!(library.folder_listings[&item.id].files.len(), 3);
-        assert!(library.folder_listings[&item.id]
-            .files
-            .iter()
-            .any(|path| path.file_name().and_then(|name| name.to_str()) == Some("added-later.png")));
+        assert!(
+            library.folder_listings[&item.id]
+                .files
+                .iter()
+                .any(|path| path.file_name().and_then(|name| name.to_str())
+                    == Some("added-later.png"))
+        );
 
         fs::remove_file(source_dir.join("bg-0.png")).unwrap();
         library.expire_folder_listings();

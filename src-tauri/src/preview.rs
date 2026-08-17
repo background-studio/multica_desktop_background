@@ -11,8 +11,8 @@ use std::{
     time::Duration,
 };
 
-use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use sha2::{Digest, Sha256};
+use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use uuid::Uuid;
 
 use crate::{
@@ -187,10 +187,7 @@ pub struct MediaServer {
 }
 
 impl MediaServer {
-    pub fn start(
-        library: &mut MediaLibrary,
-        order: SlideshowOrder,
-    ) -> Result<Self, String> {
+    pub fn start(library: &mut MediaLibrary, order: SlideshowOrder) -> Result<Self, String> {
         let server = Arc::new(Server::http("127.0.0.1:0").map_err(|error| error.to_string())?);
         let port = server
             .server_addr()
@@ -235,9 +232,7 @@ impl MediaServer {
             .into_iter()
             .filter_map(|item| {
                 let resolved = if item.origin == crate::models::MediaOrigin::Folder {
-                    library
-                        .resolve_playback(&item, order, false)
-                        .ok()?
+                    library.resolve_playback(&item, order, false).ok()?
                 } else {
                     let path = library.path_for(&item).ok()?;
                     crate::media::ResolvedMedia {

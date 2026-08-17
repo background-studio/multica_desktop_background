@@ -7,6 +7,8 @@
 [Background Studio 壳](https://github.com/background-studio/background-studio) 的插件
 （`--plugin` + `*-plugin.zip`，见 [docs/plugin-protocol.md](./docs/plugin-protocol.md)）。
 
+插件模式下启用后不会自动打开 Multica。worker 等你照常启动官方程序：新启动的普通进程会按完整路径确认后重启为可注入会话并自动套上次背景；启用前已经在跑的进程不会被静默关掉，需要手动「立即接管」。暂停或恢复官方外观会停掉这次进程里的自动接管，直到再点应用。
+
 一个面向 Windows 官方 Multica 桌面应用的独立背景管理器。它通过本机回环
 Chromium DevTools Protocol 动态加载背景，不修改 `app.asar`、应用签名、
 登录状态或页面数据。
@@ -79,7 +81,8 @@ git push origin v0.2.0
 - 仅连接 `127.0.0.1` 回环调试口
 - 仅向 `https://multica.ai/` / `https://www.multica.ai/` 页面注入
 - 不修改 Multica 安装资源；暂停和恢复必须能完整移除注入
-- 应用背景时如 Notion 未开启调试口，需要重启一次 Multica
+- 应用背景时如 Multica 未开启调试口，需要重启一次 Multica
+- 插件模式只监视并接管官方安装路径上的 `Multica.exe`，不改快捷方式或安装文件
 
 ## 版本
 

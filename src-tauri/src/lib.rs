@@ -2,6 +2,7 @@ mod controller;
 mod electron_wco;
 mod host;
 mod injector;
+mod managed_launch;
 mod media;
 mod models;
 mod network;
@@ -21,10 +22,14 @@ use std::{
 };
 
 use controller::MulticaController;
+use managed_launch::{
+    confirm_launch_after_encode, keys_of, process_key_list, BusyGuard, ConfirmedLaunch,
+    WatcherAction, WatcherState, MSG_BUSY,
+};
 use media::MediaLibrary;
 use models::{
-    AppSnapshot, ApplyRequest, DownloadRequest, ImportResult, MediaItem, SettingsPatch,
-    RuntimeStatus, SkippedImport,
+    AppSnapshot, ApplyRequest, DownloadRequest, ImportResult, MediaItem, RuntimeStatus,
+    SettingsPatch, SkippedImport,
 };
 use network::download_remote_media;
 use payload::{build_active_payload, ActivePayload};
@@ -54,6 +59,8 @@ struct StudioState {
     slideshow_busy: AtomicBool,
     live_apply_generation: AtomicU64,
     live_apply_worker_running: AtomicBool,
+    watcher: Mutex<WatcherState>,
+    managed_busy: AtomicBool,
 }
 
 fn lock<T>(value: &Mutex<T>) -> Result<MutexGuard<'_, T>, String> {
@@ -74,9 +81,11 @@ impl StudioState {
                 .retain(|id| library.get_by_id(id).is_some());
             if let Some(active) = cleaned.active_media_id.clone() {
                 if library.get_by_id(&active).is_none() {
-                    cleaned.active_media_id = cleaned.playlist_ids.first().cloned().or_else(|| {
-                        library.items().first().map(|item| item.id.clone())
-                    });
+                    cleaned.active_media_id = cleaned
+                        .playlist_ids
+                        .first()
+                        .cloned()
+                        .or_else(|| library.items().first().map(|item| item.id.clone()));
                 }
             }
             if cleaned.playlist_ids.len() != before
@@ -100,7 +109,36 @@ impl StudioState {
             slideshow_busy: AtomicBool::new(false),
             live_apply_generation: AtomicU64::new(0),
             live_apply_worker_running: AtomicBool::new(false),
+            watcher: Mutex::new(WatcherState::new()),
+            managed_busy: AtomicBool::new(false),
         })
+    }
+
+    pub(crate) fn rearm_managed_watcher(&self) -> Result<(), String> {
+        lock(&self.watcher)?.rearm();
+        lock(&self.controller)?.set_watcher_paused(false);
+        Ok(())
+    }
+
+    pub(crate) fn suspend_managed_watcher(&self) -> Result<(), String> {
+        lock(&self.watcher)?.suspend();
+        lock(&self.controller)?.set_watcher_paused(true);
+        Ok(())
+    }
+
+    pub(crate) fn sync_managed_active(&self) -> Result<(), String> {
+        let probe = lock(&self.controller)?.probe_managed()?;
+        lock(&self.watcher)?.mark_managed_active(&process_key_list(&probe.processes));
+        Ok(())
+    }
+
+    pub(crate) fn sync_managed_failure(&self) -> Result<(), String> {
+        let processes = lock(&self.controller)?
+            .probe_managed()
+            .map(|probe| process_key_list(&probe.processes))
+            .unwrap_or_default();
+        lock(&self.watcher)?.takeover_failed(&processes);
+        Ok(())
     }
 
     fn snapshot(&self) -> Result<AppSnapshot, String> {
@@ -262,10 +300,7 @@ async fn run_live_apply_worker(app: AppHandle) {
         if state.live_apply_generation.load(Ordering::Acquire) == generation {
             break;
         }
-        if state
-            .live_apply_worker_running
-            .swap(true, Ordering::AcqRel)
-        {
+        if state.live_apply_worker_running.swap(true, Ordering::AcqRel) {
             break;
         }
     }
@@ -278,10 +313,7 @@ fn queue_live_apply(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
     state.live_apply_generation.fetch_add(1, Ordering::AcqRel);
-    if state
-        .live_apply_worker_running
-        .swap(true, Ordering::AcqRel)
-    {
+    if state.live_apply_worker_running.swap(true, Ordering::AcqRel) {
         return Ok(());
     }
     let worker_app = app.clone();
@@ -418,6 +450,162 @@ async fn advance_slideshow(app: AppHandle) -> Result<(), String> {
     .await;
     state.slideshow_busy.store(false, Ordering::SeqCst);
     result
+}
+
+fn start_managed_launch_worker(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            if app.state::<StudioState>().quitting.load(Ordering::SeqCst) {
+                break;
+            }
+            let tick_app = app.clone();
+            let outcome =
+                tauri::async_runtime::spawn_blocking(move || tick_managed_launch(&tick_app)).await;
+            match outcome {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    let state = app.state::<StudioState>();
+                    if let Ok(mut controller) = lock(&state.controller) {
+                        let status = controller.status();
+                        if status.phase != "error" || status.message != error {
+                            controller.set_managed_error(error);
+                        }
+                    }
+                    let _ = state.refresh_runtime_status();
+                    let _ = state.emit_snapshot(&app);
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    continue;
+                }
+                Err(error) => {
+                    eprintln!("托管探测任务失败：{error}");
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    });
+}
+
+fn tick_managed_launch(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<StudioState>();
+    if state.quitting.load(Ordering::SeqCst) || state.managed_busy.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let mut controller = match state.controller.try_lock() {
+        Ok(controller) => controller,
+        Err(_) => return Ok(()),
+    };
+    if controller.watcher_paused() {
+        drop(controller);
+        lock(&state.watcher)?.suspend();
+        return Ok(());
+    }
+    let probe = controller.probe_managed()?;
+    let action = {
+        let mut watcher = lock(&state.watcher)?;
+        watcher.decide(&probe.observation())
+    };
+    match action {
+        WatcherAction::KeepActive | WatcherAction::Suspend => Ok(()),
+        WatcherAction::Wait
+        | WatcherAction::ReportExistingUnmanaged
+        | WatcherAction::WaitForDebugPort
+        | WatcherAction::ReportDebugTimeout => {
+            let before = controller.status();
+            controller.apply_watcher_action_status(action);
+            let changed = before.phase != controller.status().phase
+                || before.message != controller.status().message;
+            drop(controller);
+            if changed {
+                let _ = state.refresh_runtime_status();
+                let _ = state.emit_snapshot(app);
+            }
+            Ok(())
+        }
+        WatcherAction::ReleaseAndWait => {
+            controller.release_stale_session()?;
+            drop(controller);
+            let _ = state.refresh_runtime_status();
+            let _ = state.emit_snapshot(app);
+            Ok(())
+        }
+        WatcherAction::Attach | WatcherAction::Takeover => {
+            let Some(_busy) = BusyGuard::acquire(&state.managed_busy) else {
+                return Ok(());
+            };
+            let original_keys = keys_of(&probe.processes);
+            controller.apply_watcher_action_status(action);
+            drop(controller);
+            let _ = state.refresh_runtime_status();
+            let _ = state.emit_snapshot(app);
+            let restart = action == WatcherAction::Takeover;
+            let result: Result<bool, String> = (|| {
+                let payload = state.active_payload()?;
+                let mut controller = lock(&state.controller)?;
+                let after = controller.probe_managed()?;
+                let confirmed =
+                    confirm_launch_after_encode(action, &original_keys, &after.observation());
+                match confirmed {
+                    ConfirmedLaunch::Attach => {
+                        controller.attach_without_restart(payload)?;
+                        Ok(true)
+                    }
+                    ConfirmedLaunch::Takeover => {
+                        controller.auto_takeover(payload)?;
+                        Ok(true)
+                    }
+                    ConfirmedLaunch::CancelExited | ConfirmedLaunch::CancelStale => {
+                        if confirmed == ConfirmedLaunch::CancelExited {
+                            let _ = controller.release_stale_session();
+                        }
+                        let observation = after.observation();
+                        drop(controller);
+                        let next = lock(&state.watcher)?.sync_to_current(&observation);
+                        if let Ok(mut controller) = lock(&state.controller) {
+                            controller.apply_watcher_action_status(next);
+                        }
+                        Ok(false)
+                    }
+                }
+            })();
+            match result {
+                Ok(true) => {
+                    let _ = state.sync_managed_active();
+                    let _ = state.refresh_runtime_status();
+                    let _ = state.emit_snapshot(app);
+                    Ok(())
+                }
+                Ok(false) => {
+                    let _ = state.refresh_runtime_status();
+                    let _ = state.emit_snapshot(app);
+                    Ok(())
+                }
+                Err(error) if error.contains("请先从媒体库选择") => {
+                    let _ = state.sync_managed_failure();
+                    if let Ok(mut controller) = lock(&state.controller) {
+                        controller.set_managed_status("idle", &error);
+                    }
+                    let _ = state.refresh_runtime_status();
+                    let _ = state.emit_snapshot(app);
+                    Ok(())
+                }
+                Err(error) if !restart && error.contains("需要重启一次") => {
+                    let _ = state.sync_managed_failure();
+                    if let Ok(mut controller) = lock(&state.controller) {
+                        controller.set_managed_status("idle", managed_launch::MSG_EXISTING);
+                    }
+                    let _ = state.refresh_runtime_status();
+                    let _ = state.emit_snapshot(app);
+                    Ok(())
+                }
+                Err(error) => {
+                    let _ = state.sync_managed_failure();
+                    let _ = state.refresh_runtime_status();
+                    let _ = state.emit_snapshot(app);
+                    Err(error)
+                }
+            }
+        }
+    }
 }
 
 fn start_slideshow_scheduler(app: AppHandle) {
@@ -638,6 +826,10 @@ async fn apply_background(
     state: State<'_, StudioState>,
     request: Option<ApplyRequest>,
 ) -> Result<AppSnapshot, String> {
+    let Some(_busy) = BusyGuard::acquire(&state.managed_busy) else {
+        return Err(MSG_BUSY.to_string());
+    };
+    let _ = state.rearm_managed_watcher();
     let app_for_payload = app.clone();
     let payload = tauri::async_runtime::spawn_blocking(move || {
         let state = app_for_payload.state::<StudioState>();
@@ -658,7 +850,7 @@ async fn apply_background(
         .await
         .map_err(|error| error.to_string())?;
     let _ = state.refresh_runtime_status();
-    if let Err(error) = first {
+    let result = if let Err(error) = first {
         if !restart_requested && error.contains("需要重启一次") {
             let confirmed = app
                 .dialog()
@@ -672,22 +864,32 @@ async fn apply_background(
                 ))
                 .blocking_show();
             if !confirmed {
+                let _ = state.sync_managed_failure();
                 return state.emit_snapshot(&app);
             }
             let retry = run_apply(true, payload)
                 .await
                 .map_err(|error| error.to_string())?;
             let _ = state.refresh_runtime_status();
-            if let Err(error) = retry {
-                let _ = state.emit_snapshot(&app);
-                return Err(error);
-            }
+            retry.map(|_| ()).map_err(|error| error)
         } else {
+            Err(error)
+        }
+    } else {
+        Ok(())
+    };
+    if result.is_ok() {
+        let _ = state.sync_managed_active();
+    } else {
+        let _ = state.sync_managed_failure();
+    }
+    match result {
+        Ok(()) => state.emit_snapshot(&app),
+        Err(error) => {
             let _ = state.emit_snapshot(&app);
-            return Err(error);
+            Err(error)
         }
     }
-    state.emit_snapshot(&app)
 }
 
 #[tauri::command]
@@ -696,6 +898,7 @@ async fn pause_background(
     state: State<'_, StudioState>,
 ) -> Result<AppSnapshot, String> {
     state.live_apply_generation.fetch_add(1, Ordering::AcqRel);
+    let _ = state.suspend_managed_watcher();
     let controller = Arc::clone(&state.controller);
     let result = tauri::async_runtime::spawn_blocking(move || lock(&controller)?.pause())
         .await
@@ -711,6 +914,7 @@ async fn restore_background(
     state: State<'_, StudioState>,
 ) -> Result<AppSnapshot, String> {
     state.live_apply_generation.fetch_add(1, Ordering::AcqRel);
+    let _ = state.suspend_managed_watcher();
     let controller = Arc::clone(&state.controller);
     let result = tauri::async_runtime::spawn_blocking(move || lock(&controller)?.restore())
         .await
@@ -757,12 +961,31 @@ pub fn run() {
                 match lock(&state.controller)
                     .and_then(|mut controller| controller.reconnect_saved(payload))
                 {
-                    Ok(true) => {}
+                    Ok(true) => {
+                        let _ = state.sync_managed_active();
+                    }
                     Ok(false) => {
                         eprintln!("启动时未恢复背景会话：没有可用的 Multica CDP 运行时。");
                     }
                     Err(error) => {
                         eprintln!("启动时恢复背景会话失败：{error}");
+                    }
+                }
+                let _ = state.refresh_runtime_status();
+            }
+            if plugin_mode {
+                if let Ok(mut controller) = lock(&state.controller) {
+                    if controller.status().phase != "active" {
+                        match controller.probe_managed() {
+                            Ok(probe) => {
+                                let action = lock(&state.watcher)
+                                    .map(|mut watcher| watcher.decide(&probe.observation()));
+                                if let Ok(action) = action {
+                                    controller.apply_watcher_action_status(action);
+                                }
+                            }
+                            Err(error) => controller.set_managed_error(error),
+                        }
                     }
                 }
                 let _ = state.refresh_runtime_status();
@@ -783,6 +1006,7 @@ pub fn run() {
             app.manage(state);
             if plugin_mode {
                 plugin_ipc::start(app.handle().clone());
+                start_managed_launch_worker(app.handle().clone());
             } else {
                 let tray = host::setup_tray(app.handle()).map_err(std::io::Error::other)?;
                 let managed = app.state::<StudioState>();

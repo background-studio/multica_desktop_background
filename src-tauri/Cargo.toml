@@ -1,6 +1,6 @@
 [package]
 name = "multica-background-studio"
-version = "0.2.7"
+version = "0.2.8-beta.1"
 description = "A reversible background manager for the Multica Windows desktop app."
 authors = ["Multica Background Studio contributors"]
 license = "MIT"
@@ -37,6 +37,7 @@ base64 = "0.22.1"
 wait-timeout = "0.2.1"
 winreg = "0.56.0"
 tauri-plugin-single-instance = "2.4.3"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }
 
 [profile.release]
 codegen-units = 1

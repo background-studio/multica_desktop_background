@@ -74,8 +74,14 @@ pub fn setup_tray(app: &AppHandle) -> Result<TrayUi, String> {
         .map_err(|error| error.to_string())?;
     let restore = MenuItem::with_id(app, "restore", "恢复官方外观", true, None::<&str>)
         .map_err(|error| error.to_string())?;
-    let quit = MenuItem::with_id(app, "quit", "退出 Studio（保留 Multica）", true, None::<&str>)
-        .map_err(|error| error.to_string())?;
+    let quit = MenuItem::with_id(
+        app,
+        "quit",
+        "退出 Studio（保留 Multica）",
+        true,
+        None::<&str>,
+    )
+    .map_err(|error| error.to_string())?;
     let separator_one = PredefinedMenuItem::separator(app).map_err(|error| error.to_string())?;
     let separator_two = PredefinedMenuItem::separator(app).map_err(|error| error.to_string())?;
     let menu = Menu::with_items(

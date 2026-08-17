@@ -67,7 +67,7 @@ jobs:
           releaseName: "Multica Background Studio ${{ github.ref_name }}"
           generateReleaseNotes: true
           releaseDraft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
       - name: Publish plugin.zip for Background Studio host
         shell: pwsh

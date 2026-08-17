@@ -11,14 +11,18 @@ use std::{
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use wait_timeout::ChildExt;
 
 use crate::{
     electron_wco,
     injector::{read_browser_identity, window_controls_overlay_visible, InjectorEngine},
+    managed_launch::{
+        snapshot_executable_processes, Observation, ProcessRecord, WatcherAction, MSG_AUTO_APPLIED,
+        MSG_DEBUG_TIMEOUT, MSG_EXISTING, MSG_SUSPENDED, MSG_TAKING_OVER, MSG_WAITING,
+    },
     models::RuntimeStatus,
     payload::ActivePayload,
+    plugin,
     settings::write_json_transaction,
 };
 
@@ -120,12 +124,7 @@ fn candidate_executables() -> Vec<PathBuf> {
                 .join("@multicadesktop")
                 .join("Multica.exe"),
         );
-        candidates.push(
-            local
-                .join("Programs")
-                .join("Multica")
-                .join("Multica.exe"),
-        );
+        candidates.push(local.join("Programs").join("Multica").join("Multica.exe"));
     }
     if let Some(program_files) = std::env::var_os("ProgramFiles") {
         candidates.push(
@@ -161,8 +160,7 @@ $version
 "#,
         powershell_quote(&executable.to_string_lossy())
     );
-    run_powershell(&script, Duration::from_secs(15))
-        .unwrap_or_else(|_| "unknown".to_string())
+    run_powershell(&script, Duration::from_secs(15)).unwrap_or_else(|_| "unknown".to_string())
 }
 
 fn discover_multica() -> Result<MulticaInstall, String> {
@@ -199,66 +197,37 @@ fn discover_multica() -> Result<MulticaInstall, String> {
         .to_string())
 }
 
+fn process_records_for(install: &MulticaInstall) -> Result<Vec<ProcessRecord>, String> {
+    snapshot_executable_processes(&install.executable)
+}
+
 fn process_ids_for(install: &MulticaInstall) -> Result<Vec<u32>, String> {
-    let script = format!(
-        r#"
-$target = {}
-$ids = @(Get-CimInstance Win32_Process -Filter "Name='Multica.exe'" | Where-Object {{
-  $_.ExecutablePath -and [IO.Path]::GetFullPath($_.ExecutablePath).Equals($target, [StringComparison]::OrdinalIgnoreCase)
-}} | ForEach-Object {{ [int]$_.ProcessId }})
-@($ids) | ConvertTo-Json -Compress
-"#,
-        powershell_quote(&normalized_path(&install.executable))
-    );
-    let raw = run_powershell(&script, Duration::from_secs(30))?;
-    if raw.is_empty() {
-        return Ok(Vec::new());
-    }
-    let value: Value = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
-    Ok(match value {
-        Value::Array(values) => values
-            .into_iter()
-            .filter_map(|value| value.as_u64())
-            .filter_map(|value| u32::try_from(value).ok())
-            .collect(),
-        Value::Number(value) => value
-            .as_u64()
-            .and_then(|value| u32::try_from(value).ok())
-            .into_iter()
-            .collect(),
-        _ => Vec::new(),
-    })
+    Ok(process_records_for(install)?
+        .into_iter()
+        .map(|process| process.key.pid)
+        .collect())
 }
 
 fn debug_ports_for(install: &MulticaInstall) -> Result<Vec<u16>, String> {
-    let script = format!(
-        r#"
-$target = {}
-$ports = @(Get-CimInstance Win32_Process -Filter "Name='Multica.exe'" | Where-Object {{
-  $_.ExecutablePath -and $_.CommandLine -and
-  [IO.Path]::GetFullPath($_.ExecutablePath).Equals($target, [StringComparison]::OrdinalIgnoreCase)
-}} | ForEach-Object {{
-  $match = [regex]::Match("$($_.CommandLine)", '(?:^|\s)"?--remote-debugging-port=(\d+)"?(?:\s|$)')
-  if ($match.Success) {{ [int]$match.Groups[1].Value }}
-}})
-@($ports | Sort-Object -Unique) | ConvertTo-Json -Compress
-"#,
-        powershell_quote(&normalized_path(&install.executable))
-    );
-    let raw = run_powershell(&script, Duration::from_secs(30))?;
-    if raw.is_empty() {
-        return Ok(Vec::new());
-    }
-    let value: Value = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
-    let values = match value {
-        Value::Array(values) => values,
-        value => vec![value],
-    };
-    Ok(values
+    let mut ports = process_records_for(install)?
         .into_iter()
-        .filter_map(|value| value.as_u64())
-        .filter_map(|value| u16::try_from(value).ok())
-        .collect())
+        .filter_map(|process| process.debug_port)
+        .collect::<Vec<_>>();
+    ports.sort_unstable();
+    ports.dedup();
+    Ok(ports)
+}
+
+fn is_disconnected_error(error: &str) -> bool {
+    error.contains("CDP 会话已关闭")
+        || error.contains("CDP 浏览器身份已变化")
+        || error.contains("CDP 命令超时")
+        || error.contains("CDP 连接超时")
+        || error.contains("CDP 返回 HTTP")
+}
+
+fn session_has_wco(port: u16, browser_id: &str) -> bool {
+    window_controls_overlay_visible(port, browser_id).unwrap_or(false)
 }
 
 fn stop_verified_multica(install: &MulticaInstall) -> Result<(), String> {
@@ -308,11 +277,30 @@ fn select_port(preferred: u16) -> Result<u16, String> {
     Err("无法为 Multica 分配本机调试端口。".to_string())
 }
 
+pub struct ManagedProbe {
+    pub processes: Vec<ProcessRecord>,
+    pub has_ready_debug_session: bool,
+    pub engine_alive: bool,
+}
+
+impl ManagedProbe {
+    pub fn observation(&self) -> Observation {
+        Observation {
+            processes: self.processes.clone(),
+            has_ready_debug_session: self.has_ready_debug_session,
+            engine_alive: self.engine_alive,
+            now: std::time::Instant::now(),
+        }
+    }
+}
+
 pub struct MulticaController {
     state_path: PathBuf,
     engine: Option<InjectorEngine>,
     state: Option<RuntimeState>,
     status: RuntimeStatus,
+    install_cache: Option<MulticaInstall>,
+    watcher_paused: bool,
 }
 
 impl MulticaController {
@@ -331,6 +319,8 @@ impl MulticaController {
             engine: None,
             state,
             status: RuntimeStatus::default(),
+            install_cache: None,
+            watcher_paused: false,
         }
     }
 
@@ -340,6 +330,145 @@ impl MulticaController {
             status.active_targets = engine.active_targets();
         }
         status
+    }
+
+    pub fn watcher_paused(&self) -> bool {
+        self.watcher_paused
+    }
+
+    pub fn set_watcher_paused(&mut self, paused: bool) {
+        self.watcher_paused = paused;
+    }
+
+    pub fn set_managed_status(&mut self, phase: &str, message: &str) {
+        self.status.phase = phase.to_string();
+        self.status.message = message.to_string();
+        if phase != "error" {
+            self.status.last_error = None;
+        }
+    }
+
+    pub fn set_managed_error(&mut self, error: impl Into<String>) {
+        let error = error.into();
+        self.status.phase = "error".to_string();
+        self.status.message = error.clone();
+        self.status.last_error = Some(error);
+    }
+
+    fn cached_install(&mut self) -> Result<MulticaInstall, String> {
+        if let Some(install) = &self.install_cache {
+            if Path::new(&install.executable).is_file() {
+                return Ok(install.clone());
+            }
+            self.install_cache = None;
+        }
+        let install = discover_multica()?;
+        self.install_cache = Some(install.clone());
+        Ok(install)
+    }
+
+    fn saved_session_is_live(&self, install: &MulticaInstall) -> bool {
+        let Some(state) = &self.state else {
+            return false;
+        };
+        state.package_full_name == install.package_full_name
+            && state.wco_enabled
+            && normalized_path(&state.executable) == normalized_path(&install.executable)
+            && read_browser_identity(state.port).ok().as_deref() == Some(state.browser_id.as_str())
+            && session_has_wco(state.port, &state.browser_id)
+    }
+
+    fn live_debug_session_ready(processes: &[ProcessRecord]) -> bool {
+        for process in processes {
+            let Some(port) = process.debug_port else {
+                continue;
+            };
+            let Ok(browser_id) = read_browser_identity(port) else {
+                continue;
+            };
+            if session_has_wco(port, &browser_id) {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn probe_managed(&mut self) -> Result<ManagedProbe, String> {
+        let install = self.cached_install()?;
+        let processes = process_records_for(&install)?;
+        let engine_alive = self
+            .engine
+            .as_ref()
+            .is_some_and(InjectorEngine::is_connected);
+        let has_ready_debug_session = engine_alive
+            || self.saved_session_is_live(&install)
+            || Self::live_debug_session_ready(&processes);
+        self.status.multica_version = Some(install.version);
+        Ok(ManagedProbe {
+            processes,
+            has_ready_debug_session,
+            engine_alive,
+        })
+    }
+
+    pub fn apply_watcher_action_status(&mut self, action: WatcherAction) {
+        match action {
+            WatcherAction::Wait => {
+                if !matches!(self.status.phase.as_str(), "active" | "paused") {
+                    self.set_managed_status("idle", MSG_WAITING);
+                }
+            }
+            WatcherAction::ReleaseAndWait => {
+                self.set_managed_status("idle", MSG_WAITING);
+            }
+            WatcherAction::ReportExistingUnmanaged => {
+                self.set_managed_status("idle", MSG_EXISTING);
+            }
+            WatcherAction::WaitForDebugPort | WatcherAction::Takeover | WatcherAction::Attach => {
+                self.set_managed_status("starting", MSG_TAKING_OVER);
+            }
+            WatcherAction::ReportDebugTimeout => {
+                self.set_managed_error(MSG_DEBUG_TIMEOUT);
+            }
+            WatcherAction::KeepActive | WatcherAction::Suspend => {}
+        }
+    }
+
+    pub fn auto_takeover(&mut self, payload: ActivePayload) -> Result<RuntimeStatus, String> {
+        self.set_managed_status("starting", MSG_TAKING_OVER);
+        self.apply(payload, true)?;
+        self.set_managed_status("active", MSG_AUTO_APPLIED);
+        Ok(self.status())
+    }
+
+    pub fn attach_without_restart(
+        &mut self,
+        payload: ActivePayload,
+    ) -> Result<RuntimeStatus, String> {
+        self.set_managed_status("starting", MSG_TAKING_OVER);
+        self.apply(payload, false)?;
+        if self.status.phase == "active" {
+            self.set_managed_status("active", MSG_AUTO_APPLIED);
+        }
+        Ok(self.status())
+    }
+
+    pub fn release_stale_session(&mut self) -> Result<RuntimeStatus, String> {
+        self.engine = None;
+        self.write_state(None)?;
+        self.status.active_targets = 0;
+        self.set_managed_status("idle", MSG_WAITING);
+        Ok(self.status())
+    }
+
+    fn drop_disconnected_engine(&mut self) {
+        if self
+            .engine
+            .as_ref()
+            .is_some_and(|engine| !engine.is_connected())
+        {
+            self.engine = None;
+        }
     }
 
     fn write_state(&mut self, state: Option<RuntimeState>) -> Result<(), String> {
@@ -408,17 +537,26 @@ impl MulticaController {
         payload: ActivePayload,
         restart_existing: bool,
     ) -> Result<RuntimeStatus, String> {
+        self.watcher_paused = false;
         self.status.phase = "starting".to_string();
         self.status.message = "正在连接 Multica".to_string();
         self.status.last_error = None;
         let result: Result<RuntimeStatus, String> = (|| {
-            let install = discover_multica()?;
+            let install = self.cached_install()?;
+            self.drop_disconnected_engine();
             if let Some(engine) = &self.engine {
-                engine.update(payload)?;
-                self.status.phase = "active".to_string();
-                self.status.message = "背景已实时应用".to_string();
-                self.status.multica_version = Some(install.version);
-                return Ok(self.status());
+                match engine.update(payload.clone()) {
+                    Ok(()) => {
+                        self.status.phase = "active".to_string();
+                        self.status.message = "背景已实时应用".to_string();
+                        self.status.multica_version = Some(install.version);
+                        return Ok(self.status());
+                    }
+                    Err(error) if is_disconnected_error(&error) => {
+                        self.engine = None;
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             if self.try_attach_saved(&install) {
                 self.engine
@@ -468,8 +606,8 @@ impl MulticaController {
             ) {
                 Ok(browser_id) => browser_id,
                 Err(error) => {
-                    let recovery = stop_verified_multica(&install)
-                        .and_then(|_| launch_multica(&install, &[]));
+                    let recovery =
+                        stop_verified_multica(&install).and_then(|_| launch_multica(&install, &[]));
                     return Err(match recovery {
                         Ok(()) => format!(
                             "透明原生按钮标题栏启动失败，已恢复官方 Multica：{error}"
@@ -510,16 +648,22 @@ impl MulticaController {
     }
 
     pub fn pause(&mut self) -> Result<RuntimeStatus, String> {
+        self.watcher_paused = true;
         if let Some(engine) = &self.engine {
             engine.pause()?;
         }
         self.status.phase = "paused".to_string();
-        self.status.message = "背景已暂停".to_string();
+        self.status.message = if plugin::is_plugin_mode() {
+            MSG_SUSPENDED.to_string()
+        } else {
+            "背景已暂停".to_string()
+        };
         self.status.last_error = None;
         Ok(self.status())
     }
 
     pub fn restore(&mut self) -> Result<RuntimeStatus, String> {
+        self.watcher_paused = true;
         self.status.phase = "restoring".to_string();
         self.status.message = "正在恢复官方外观".to_string();
         self.status.last_error = None;
@@ -527,7 +671,7 @@ impl MulticaController {
             if let Some(mut engine) = self.engine.take() {
                 engine.stop()?;
             }
-            let install = discover_multica()?;
+            let install = self.cached_install()?;
             if !process_ids_for(&install)?.is_empty() {
                 stop_verified_multica(&install)?;
                 launch_multica(&install, &[])?;
@@ -561,6 +705,37 @@ mod tests {
     fn selects_an_available_loopback_port() {
         let port = select_port(39_000).expect("available test port");
         assert!((39_000..=39_100).contains(&port));
+    }
+
+    #[test]
+    fn treats_dead_cdp_errors_as_recoverable() {
+        assert!(is_disconnected_error("CDP 会话已关闭。"));
+        assert!(is_disconnected_error(
+            "CDP 浏览器身份已变化，拒绝继续注入。"
+        ));
+        assert!(!is_disconnected_error("Multica 渲染页执行背景脚本失败：x"));
+    }
+
+    #[test]
+    fn wait_and_existing_clear_stale_probe_error() {
+        let dir =
+            std::env::temp_dir().join(format!("multica-managed-status-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let mut controller = MulticaController::load(&dir);
+        controller.set_managed_error("探测失败");
+        controller.apply_watcher_action_status(WatcherAction::Wait);
+        let status = controller.status();
+        assert_eq!(status.phase, "idle");
+        assert_eq!(status.message, MSG_WAITING);
+        assert!(status.last_error.is_none());
+
+        controller.set_managed_error("探测失败");
+        controller.apply_watcher_action_status(WatcherAction::ReportExistingUnmanaged);
+        let status = controller.status();
+        assert_eq!(status.phase, "idle");
+        assert_eq!(status.message, MSG_EXISTING);
+        assert!(status.last_error.is_none());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

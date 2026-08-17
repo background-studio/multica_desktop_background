@@ -649,6 +649,16 @@ impl InjectorEngine {
     pub fn active_targets(&self) -> u32 {
         self.target_count.load(Ordering::Relaxed) as u32
     }
+
+    pub fn is_connected(&self) -> bool {
+        let Ok(inner) = self.inner.lock() else {
+            return false;
+        };
+        match read_browser_identity(inner.port) {
+            Ok(id) => id == inner.browser_id,
+            Err(_) => false,
+        }
+    }
 }
 
 impl Drop for InjectorEngine {
@@ -685,7 +695,9 @@ mod tests {
         assert!(is_main_multica_target_url(
             "https://multica.ai/p/example/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ));
-        assert!(is_main_multica_target_url("https://www.multica.ai/workspace/page"));
+        assert!(is_main_multica_target_url(
+            "https://www.multica.ai/workspace/page"
+        ));
         assert!(is_main_multica_target_url("https://app.multica.ai/tasks"));
         assert!(is_main_multica_target_url("https://staging.multica.ai/"));
         assert!(is_main_multica_target_url(
@@ -698,8 +710,12 @@ mod tests {
             "file:///C:/Users/example/AppData/Local/Programs/@multicadesktop/resources/app.asar/out/renderer/other.html"
         ));
         assert!(!is_main_multica_target_url("http://localhost:3000/"));
-        assert!(!is_main_multica_target_url("https://evil.example/multica.ai"));
-        assert!(!is_main_multica_target_url("https://multica.ai.evil.example/"));
+        assert!(!is_main_multica_target_url(
+            "https://evil.example/multica.ai"
+        ));
+        assert!(!is_main_multica_target_url(
+            "https://multica.ai.evil.example/"
+        ));
         assert!(!is_main_multica_target_url("https://notmultica.ai/"));
     }
 

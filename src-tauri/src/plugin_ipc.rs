@@ -5,6 +5,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::{
     host, lock,
+    managed_launch::{BusyGuard, MSG_BUSY},
     plugin::{self, PIPE_NAME, PLUGIN_ID, PLUGIN_PROTOCOL},
     StudioState,
 };
@@ -75,11 +76,7 @@ async fn handle_client(
 ) -> Result<(), String> {
     let (reader, mut writer) = tokio::io::split(client);
     let mut lines = BufReader::new(reader).lines();
-    while let Some(line) = lines
-        .next_line()
-        .await
-        .map_err(|error| error.to_string())?
-    {
+    while let Some(line) = lines.next_line().await.map_err(|error| error.to_string())? {
         let line = line.trim().to_string();
         if line.is_empty() {
             continue;
@@ -142,9 +139,22 @@ fn status_payload(app: &AppHandle) -> Result<serde_json::Value, String> {
 
 async fn apply_via_ipc(app: AppHandle) -> Result<serde_json::Value, String> {
     let state = app.state::<StudioState>();
-    let payload = {
-        let state = app.state::<StudioState>();
-        state.active_payload()?
+    let Some(_busy) = BusyGuard::acquire(&state.managed_busy) else {
+        return Err(MSG_BUSY.to_string());
+    };
+    let _ = state.rearm_managed_watcher();
+    let app_for_payload = app.clone();
+    let payload = tauri::async_runtime::spawn_blocking(move || {
+        app_for_payload.state::<StudioState>().active_payload()
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    let payload = match payload {
+        Ok(payload) => payload,
+        Err(error) => {
+            let _ = state.sync_managed_failure();
+            return Err(error);
+        }
     };
     let controller = std::sync::Arc::clone(&state.controller);
     let first_payload = payload.clone();
@@ -154,8 +164,8 @@ async fn apply_via_ipc(app: AppHandle) -> Result<serde_json::Value, String> {
     .await
     .map_err(|error| error.to_string())?;
     let _ = state.refresh_runtime_status();
-    match first {
-        Ok(_) => status_payload(&app),
+    let result = match first {
+        Ok(_) => Ok(()),
         Err(error) if error.contains("需要重启一次") => {
             let controller = std::sync::Arc::clone(&state.controller);
             let retry = tauri::async_runtime::spawn_blocking(move || {
@@ -164,11 +174,17 @@ async fn apply_via_ipc(app: AppHandle) -> Result<serde_json::Value, String> {
             .await
             .map_err(|error| error.to_string())?;
             let _ = state.refresh_runtime_status();
-            retry?;
-            status_payload(&app)
+            retry.map(|_| ())
         }
         Err(error) => Err(error),
+    };
+    if result.is_ok() {
+        let _ = state.sync_managed_active();
+    } else {
+        let _ = state.sync_managed_failure();
     }
+    result?;
+    status_payload(&app)
 }
 
 async fn pause_via_ipc(app: AppHandle) -> Result<serde_json::Value, String> {
@@ -176,6 +192,7 @@ async fn pause_via_ipc(app: AppHandle) -> Result<serde_json::Value, String> {
     state
         .live_apply_generation
         .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    let _ = state.suspend_managed_watcher();
     let controller = std::sync::Arc::clone(&state.controller);
     tauri::async_runtime::spawn_blocking(move || lock(&controller)?.pause())
         .await
@@ -189,6 +206,7 @@ async fn restore_via_ipc(app: AppHandle) -> Result<serde_json::Value, String> {
     state
         .live_apply_generation
         .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    let _ = state.suspend_managed_watcher();
     let controller = std::sync::Arc::clone(&state.controller);
     tauri::async_runtime::spawn_blocking(move || lock(&controller)?.restore())
         .await
