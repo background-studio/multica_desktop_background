@@ -1,22 +1,11 @@
 use std::{
     fs::{self, OpenOptions},
     io::Write,
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    path::Path,
 };
 
 use serde::Serialize;
-use serde_json::Value;
 use uuid::Uuid;
-
-use crate::models::{AppSettings, SettingsPatch};
-
-fn timestamp_millis() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-}
 
 pub fn write_json_transaction<T: Serialize>(file_path: &Path, value: &T) -> Result<(), String> {
     let directory = file_path
@@ -73,74 +62,29 @@ pub fn write_json_transaction<T: Serialize>(file_path: &Path, value: &T) -> Resu
     Ok(())
 }
 
-pub struct SettingsStore {
-    pub file_path: PathBuf,
-    settings: AppSettings,
-}
-
-impl SettingsStore {
-    pub fn load(data_directory: &Path) -> Result<Self, String> {
-        let file_path = data_directory.join("settings.json");
-        let settings = match fs::read_to_string(&file_path) {
-            Ok(content) => match serde_json::from_str::<Value>(&content) {
-                Ok(value) => AppSettings::normalize(&value),
-                Err(_) => {
-                    let invalid =
-                        file_path.with_extension(format!("json.invalid-{}", timestamp_millis()));
-                    let _ = fs::rename(&file_path, invalid);
-                    AppSettings::default()
-                }
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => AppSettings::default(),
-            Err(_) => {
-                let invalid =
-                    file_path.with_extension(format!("json.invalid-{}", timestamp_millis()));
-                let _ = fs::rename(&file_path, invalid);
-                AppSettings::default()
-            }
-        };
-        write_json_transaction(&file_path, &settings)?;
-        Ok(Self {
-            file_path,
-            settings,
-        })
-    }
-
-    pub fn value(&self) -> AppSettings {
-        self.settings.clone()
-    }
-
-    pub fn save(&mut self, settings: AppSettings) -> Result<AppSettings, String> {
-        self.settings = settings;
-        write_json_transaction(&self.file_path, &self.settings)?;
-        Ok(self.value())
-    }
-
-    pub fn patch(&mut self, patch: SettingsPatch) -> Result<AppSettings, String> {
-        self.settings.apply_patch(patch);
-        write_json_transaction(&self.file_path, &self.settings)?;
-        Ok(self.value())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
+
+    #[derive(Serialize, Deserialize)]
+    struct Sample {
+        name: String,
+    }
 
     #[test]
-    fn round_trips_utf8_settings_transactionally() {
-        let root = std::env::temp_dir().join(format!("codex-settings-{}", Uuid::new_v4()));
-        let mut store = SettingsStore::load(&root).expect("load settings");
-        store.settings.active_media_id = Some("背景-一号".to_string());
-        store.settings.display.opacity = 0.48;
-        store.save(store.settings.clone()).expect("save settings");
-
-        let reopened = SettingsStore::load(&root).expect("reopen settings");
-        assert_eq!(
-            reopened.settings.active_media_id.as_deref(),
-            Some("背景-一号")
-        );
-        assert_eq!(reopened.settings.display.opacity, 0.48);
+    fn writes_json_transactionally() {
+        let root = std::env::temp_dir().join(format!("multica-settings-{}", Uuid::new_v4()));
+        let path = root.join("runtime.json");
+        write_json_transaction(
+            &path,
+            &Sample {
+                name: "背景-一号".to_string(),
+            },
+        )
+        .unwrap();
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("背景-一号"));
         let _ = fs::remove_dir_all(root);
     }
 }

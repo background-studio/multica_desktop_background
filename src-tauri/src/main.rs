@@ -1,6 +1,9 @@
-// Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-fn main() {
-    multica_background_studio_lib::run();
+#[tokio::main]
+async fn main() {
+    if let Err(error) = multica_background_studio_lib::run().await {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
 }

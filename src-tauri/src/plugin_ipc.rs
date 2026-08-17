@@ -1,77 +1,63 @@
-use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
 use serde_json::json;
-use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::{
-    host, lock,
-    managed_launch::{BusyGuard, MSG_BUSY},
-    plugin::{self, PIPE_NAME, PLUGIN_ID, PLUGIN_PROTOCOL},
-    StudioState,
-};
+use crate::{plugin::runtime_pipe_name, protocol::parse_request_line, worker::WorkerState};
 
-#[derive(Debug, Deserialize)]
-struct PluginRequest {
-    id: String,
-    cmd: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StatusResult {
-    plugin_protocol: u32,
-    plugin_id: &'static str,
-    version: &'static str,
-    phase: String,
-    message: String,
-    active_targets: u32,
-    paused: bool,
-}
-
-pub fn start(app: AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) = serve(app).await {
+pub fn start(state: Arc<WorkerState>) {
+    tokio::spawn(async move {
+        if let Err(error) = serve(Arc::clone(&state)).await {
             eprintln!("Background Studio 插件 IPC 失败：{error}");
+            let _ = state.shutdown();
         }
     });
 }
 
 #[cfg(windows)]
-async fn serve(app: AppHandle) -> Result<(), String> {
+async fn serve(state: Arc<WorkerState>) -> Result<(), String> {
     use tokio::net::windows::named_pipe::ServerOptions;
 
+    let pipe_name = runtime_pipe_name()?;
     let mut server = ServerOptions::new()
         .first_pipe_instance(true)
-        .create(PIPE_NAME)
+        .create(&pipe_name)
         .map_err(|error| format!("创建插件管道失败：{error}"))?;
 
     loop {
+        if state.is_shutting_down() {
+            break;
+        }
         server
             .connect()
             .await
             .map_err(|error| format!("等待插件管道连接失败：{error}"))?;
         let connected = server;
+        if state.is_shutting_down() {
+            break;
+        }
         server = ServerOptions::new()
-            .create(PIPE_NAME)
+            .create(&pipe_name)
             .map_err(|error| format!("重建插件管道失败：{error}"))?;
 
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            if let Err(error) = handle_client(app, connected).await {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            if let Err(error) = handle_client(state, connected).await {
                 eprintln!("插件 IPC 会话结束：{error}");
             }
         });
     }
+    Ok(())
 }
 
 #[cfg(not(windows))]
-async fn serve(_app: AppHandle) -> Result<(), String> {
+async fn serve(_state: Arc<WorkerState>) -> Result<(), String> {
     Err("插件 IPC 仅支持 Windows。".to_string())
 }
 
 #[cfg(windows)]
 async fn handle_client(
-    app: AppHandle,
+    state: Arc<WorkerState>,
     client: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 ) -> Result<(), String> {
     let (reader, mut writer) = tokio::io::split(client);
@@ -81,13 +67,16 @@ async fn handle_client(
         if line.is_empty() {
             continue;
         }
-        let response = match serde_json::from_str::<PluginRequest>(&line) {
-            Ok(request) => dispatch(&app, request).await,
-            Err(error) => json!({
-                "id": "",
-                "ok": false,
-                "error": format!("无效请求：{error}")
-            }),
+        let (id, result) = match parse_request_line(&line) {
+            Ok(request) => {
+                let id = request.id.clone();
+                (id, dispatch(&state, request.cmd, request.params).await)
+            }
+            Err(error) => (String::new(), Err(error)),
+        };
+        let response = match result {
+            Ok(value) => json!({ "id": id, "ok": true, "result": value }),
+            Err(error) => json!({ "id": id, "ok": false, "error": error }),
         };
         let mut payload = serde_json::to_string(&response).map_err(|error| error.to_string())?;
         payload.push('\n');
@@ -96,126 +85,58 @@ async fn handle_client(
             .await
             .map_err(|error| error.to_string())?;
         writer.flush().await.map_err(|error| error.to_string())?;
+        if state.is_shutting_down() {
+            break;
+        }
     }
     Ok(())
 }
 
-async fn dispatch(app: &AppHandle, request: PluginRequest) -> serde_json::Value {
-    let id = request.id.clone();
-    let result = match request.cmd.as_str() {
-        "status" => status_payload(app),
-        "open-ui" => crate::open_main_window(app)
-            .map(|_| json!({ "opened": true }))
-            .map_err(|error| error),
-        "apply" => apply_via_ipc(app.clone()).await,
-        "pause" => pause_via_ipc(app.clone()).await,
-        "restore" => restore_via_ipc(app.clone()).await,
-        "quit-keep-target" => {
-            host::quit_without_touching_multica(app.clone());
-            Ok(json!({ "quitting": true }))
-        }
+async fn dispatch(
+    state: &WorkerState,
+    cmd: String,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    match cmd.as_str() {
+        "hello" => Ok(WorkerState::hello()),
+        "configure" => state.configure(params).await,
+        "status" => state.status_value(),
+        "apply" => state.apply().await,
+        "pause" => state.pause().await,
+        "restore" => state.restore().await,
+        "shutdown" => state.shutdown(),
         other => Err(format!("未知命令：{other}")),
-    };
-    match result {
-        Ok(value) => json!({ "id": id, "ok": true, "result": value }),
-        Err(error) => json!({ "id": id, "ok": false, "error": error }),
     }
 }
 
-fn status_payload(app: &AppHandle) -> Result<serde_json::Value, String> {
-    let state = app.state::<StudioState>();
-    let status = state.runtime_status()?;
-    let payload = StatusResult {
-        plugin_protocol: PLUGIN_PROTOCOL,
-        plugin_id: PLUGIN_ID,
-        version: env!("CARGO_PKG_VERSION"),
-        phase: status.phase.clone(),
-        message: status.message,
-        active_targets: status.active_targets,
-        paused: status.phase == "paused",
-    };
-    serde_json::to_value(payload).map_err(|error| error.to_string())
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::parse_request_line;
+    use serde_json::json;
 
-async fn apply_via_ipc(app: AppHandle) -> Result<serde_json::Value, String> {
-    let state = app.state::<StudioState>();
-    let Some(_busy) = BusyGuard::acquire(&state.managed_busy) else {
-        return Err(MSG_BUSY.to_string());
-    };
-    let _ = state.rearm_managed_watcher();
-    let app_for_payload = app.clone();
-    let payload = tauri::async_runtime::spawn_blocking(move || {
-        app_for_payload.state::<StudioState>().active_payload()
-    })
-    .await
-    .map_err(|error| error.to_string())?;
-    let payload = match payload {
-        Ok(payload) => payload,
-        Err(error) => {
-            let _ = state.sync_managed_failure();
-            return Err(error);
-        }
-    };
-    let controller = std::sync::Arc::clone(&state.controller);
-    let first_payload = payload.clone();
-    let first = tauri::async_runtime::spawn_blocking(move || {
-        lock(&controller)?.apply(first_payload, false)
-    })
-    .await
-    .map_err(|error| error.to_string())?;
-    let _ = state.refresh_runtime_status();
-    let result = match first {
-        Ok(_) => Ok(()),
-        Err(error) if error.contains("需要重启一次") => {
-            let controller = std::sync::Arc::clone(&state.controller);
-            let retry = tauri::async_runtime::spawn_blocking(move || {
-                lock(&controller)?.apply(payload, true)
-            })
+    #[tokio::test]
+    async fn dispatch_hello_and_unknown() {
+        let dir = std::env::temp_dir().join(format!("multica-ipc-{}", uuid::Uuid::new_v4()));
+        let state = WorkerState::load_from(dir).unwrap();
+        let hello = dispatch(&state, "hello".to_string(), json!(null))
             .await
-            .map_err(|error| error.to_string())?;
-            let _ = state.refresh_runtime_status();
-            retry.map(|_| ())
-        }
-        Err(error) => Err(error),
-    };
-    if result.is_ok() {
-        let _ = state.sync_managed_active();
-    } else {
-        let _ = state.sync_managed_failure();
+            .unwrap();
+        assert_eq!(hello["pluginProtocol"], 2);
+        assert_eq!(hello["pluginId"], "multica");
+        assert!(hello["capabilities"]["hotUpdate"].as_bool().unwrap());
+        let error = dispatch(&state, "open-ui".to_string(), json!(null))
+            .await
+            .unwrap_err();
+        assert!(error.contains("未知命令"));
     }
-    result?;
-    status_payload(&app)
-}
 
-async fn pause_via_ipc(app: AppHandle) -> Result<serde_json::Value, String> {
-    let state = app.state::<StudioState>();
-    state
-        .live_apply_generation
-        .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-    let _ = state.suspend_managed_watcher();
-    let controller = std::sync::Arc::clone(&state.controller);
-    tauri::async_runtime::spawn_blocking(move || lock(&controller)?.pause())
-        .await
-        .map_err(|error| error.to_string())??;
-    let _ = state.refresh_runtime_status();
-    status_payload(&app)
-}
-
-async fn restore_via_ipc(app: AppHandle) -> Result<serde_json::Value, String> {
-    let state = app.state::<StudioState>();
-    state
-        .live_apply_generation
-        .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-    let _ = state.suspend_managed_watcher();
-    let controller = std::sync::Arc::clone(&state.controller);
-    tauri::async_runtime::spawn_blocking(move || lock(&controller)?.restore())
-        .await
-        .map_err(|error| error.to_string())??;
-    let _ = state.refresh_runtime_status();
-    status_payload(&app)
-}
-
-#[allow(dead_code)]
-pub fn plugin_mode_enabled() -> bool {
-    plugin::is_plugin_mode()
+    #[test]
+    fn request_line_rejects_giant_payload() {
+        let line = format!(
+            "{{\"id\":\"1\",\"cmd\":\"configure\",\"params\":{{\"pad\":\"{}\"}}}}",
+            "x".repeat(crate::protocol::MAX_REQUEST_BYTES)
+        );
+        assert!(parse_request_line(&line).is_err());
+    }
 }

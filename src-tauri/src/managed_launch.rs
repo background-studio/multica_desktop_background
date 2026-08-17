@@ -9,6 +9,7 @@ pub const MSG_EXISTING: &str = "Multica 已在运行，点立即接管可重启"
 pub const MSG_TAKING_OVER: &str = "正在接管 Multica";
 pub const MSG_AUTO_APPLIED: &str = "背景已自动应用";
 pub const MSG_SUSPENDED: &str = "托管已暂停";
+pub const MSG_UNCONFIGURED: &str = "尚未配置背景";
 pub const MSG_DEBUG_TIMEOUT: &str = "调试会话未在 45 秒内就绪，请关闭 Multica 后重试";
 pub const MSG_BUSY: &str = "正在接管/应用中";
 
@@ -123,6 +124,15 @@ impl WatcherState {
 
     pub fn rearm(&mut self) {
         self.paused = false;
+    }
+
+    pub fn arm_after_configure(&mut self, processes: &[ProcessKey]) {
+        if self.paused {
+            return;
+        }
+        if self.baseline.is_none() {
+            self.baseline = Some(processes.iter().copied().collect());
+        }
     }
 
     pub fn mark_managed_active(&mut self, processes: &[ProcessKey]) {
@@ -525,6 +535,28 @@ mod tests {
             now,
             ..Observation::default()
         }
+    }
+
+    #[test]
+    fn arm_after_configure_keeps_preexisting_and_allows_later_takeover() {
+        let mut watcher = WatcherState::new();
+        watcher.arm_after_configure(&[ProcessKey {
+            pid: 11,
+            created_at: 100,
+        }]);
+        assert_eq!(
+            watcher.decide(&unmanaged(vec![record(11, 100)])),
+            WatcherAction::ReportExistingUnmanaged
+        );
+        assert_eq!(watcher.decide(&Observation::default()), WatcherAction::Wait);
+        assert_eq!(
+            watcher.decide(&unmanaged(vec![record(21, 200)])),
+            WatcherAction::Wait
+        );
+        assert_eq!(
+            watcher.decide(&unmanaged(vec![record(21, 200)])),
+            WatcherAction::Takeover
+        );
     }
 
     #[test]

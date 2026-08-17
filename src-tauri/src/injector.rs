@@ -737,14 +737,10 @@ mod tests {
     #[test]
     #[ignore = "requires a live Multica CDP endpoint on port 9227"]
     fn reads_live_multica_with_reqwest() {
-        let body = tauri::async_runtime::block_on(async {
-            reqwest::get("http://127.0.0.1:9227/json/version")
-                .await
-                .expect("connect with reqwest")
-                .text()
-                .await
-                .expect("read response")
-        });
+        let body = reqwest::blocking::get("http://127.0.0.1:9227/json/version")
+            .expect("connect with reqwest")
+            .text()
+            .expect("read response");
         assert!(body.contains("webSocketDebuggerUrl"));
     }
 

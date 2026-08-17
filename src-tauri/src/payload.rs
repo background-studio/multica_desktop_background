@@ -1,10 +1,10 @@
-use std::{fs, path::Path, sync::Arc};
+use std::sync::Arc;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::models::{DisplaySettings, MediaItem, MediaKind};
+use crate::models::{DisplaySettings, MediaKind};
 
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/payload_assets.rs"));
@@ -78,15 +78,12 @@ fn render_script(
         .replace("${reviewShadowStyleId}", &review_style_id))
 }
 
-pub fn build_active_payload(
-    media: &MediaItem,
-    media_path: &Path,
+pub fn build_active_payload_from_bytes(
+    bytes: Vec<u8>,
+    kind: &MediaKind,
+    mime_type: &str,
     display: &DisplaySettings,
 ) -> Result<ActivePayload, String> {
-    if media.byte_size > MAX_INLINE_MEDIA_BYTES {
-        return Err("背景媒体超过 64 MB 内嵌上限，请选择更小的文件。".to_string());
-    }
-    let bytes = fs::read(media_path).map_err(|error| error.to_string())?;
     if bytes.len() as u64 > MAX_INLINE_MEDIA_BYTES {
         return Err("背景媒体超过 64 MB 内嵌上限，请选择更小的文件。".to_string());
     }
@@ -98,7 +95,7 @@ pub fn build_active_payload(
     let revision_input = serde_json::to_vec(&RevisionInput {
         sha256: &file_digest,
         display,
-        kind: &media.kind,
+        kind,
     })
     .map_err(|error| error.to_string())?;
     let revision = digest(&[&revision_input]);
@@ -113,18 +110,14 @@ pub fn build_active_payload(
         "window[{}]",
         serde_json::to_string(PENDING_MEDIA_URL_KEY).map_err(|error| error.to_string())?
     );
-    let inline_script = render_script(MEDIA_URL_SENTINEL, &media.kind, display, &payload_revision)?;
+    let inline_script = render_script(MEDIA_URL_SENTINEL, kind, display, &payload_revision)?;
     if !inline_script.contains(&sentinel_literal) {
         return Err("背景媒体占位符生成失败。".to_string());
     }
     let script = inline_script.replacen(&sentinel_literal, &pending_expression, 1);
     let early_script = if bytes.len() <= MAX_EARLY_INLINE_MEDIA_BYTES {
-        let media_url = format!(
-            "data:{};base64,{}",
-            media.mime_type,
-            STANDARD.encode(&bytes)
-        );
-        let candidate = render_script(&media_url, &media.kind, display, &payload_revision)?;
+        let media_url = format!("data:{mime_type};base64,{}", STANDARD.encode(&bytes));
+        let candidate = render_script(&media_url, kind, display, &payload_revision)?;
         (candidate.len() <= MAX_EARLY_SCRIPT_BYTES).then_some(candidate)
     } else {
         None
@@ -133,7 +126,7 @@ pub fn build_active_payload(
         script,
         revision: payload_revision,
         media_bytes: Arc::from(bytes),
-        media_mime_type: media.mime_type.clone(),
+        media_mime_type: mime_type.to_string(),
         early_script,
     })
 }
@@ -141,30 +134,17 @@ pub fn build_active_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{MediaKind, MediaOrigin};
-    use uuid::Uuid;
+    use crate::models::MediaKind;
 
     #[test]
     fn builds_payload_from_canonical_typescript_resource() {
-        let root = std::env::temp_dir().join(format!("codex-payload-{}", Uuid::new_v4()));
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("background.png");
-        fs::write(&path, b"payload bytes").unwrap();
-        let item = MediaItem {
-            id: Uuid::new_v4().to_string(),
-            name: "background.png".to_string(),
-            kind: MediaKind::Image,
-            origin: MediaOrigin::Local,
-            file_name: "background.png".to_string(),
-            mime_type: "image/png".to_string(),
-            byte_size: 13,
-            sha256: "abc".to_string(),
-            source_url: None,
-            file_count: None,
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-            preview_url: None,
-        };
-        let payload = build_active_payload(&item, &path, &DisplaySettings::default()).unwrap();
+        let payload = build_active_payload_from_bytes(
+            b"payload bytes".to_vec(),
+            &MediaKind::Image,
+            "image/png",
+            &DisplaySettings::default(),
+        )
+        .unwrap();
         assert!(payload.script.contains("multica-background-layer"));
         assert!(payload.script.contains("diffs-container"));
         assert!(payload
@@ -200,35 +180,21 @@ mod tests {
             .is_some_and(|script| script.contains("data:image/png;base64,")));
         assert_eq!(payload.media_bytes.as_ref(), b"payload bytes");
         assert_eq!(payload.revision.len(), 64);
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn keeps_large_media_out_of_cdp_script() {
-        let root = std::env::temp_dir().join(format!("multica-large-payload-{}", Uuid::new_v4()));
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("large.png");
         let bytes = vec![0x5a; 1024 * 1024];
-        fs::write(&path, &bytes).unwrap();
-        let item = MediaItem {
-            id: Uuid::new_v4().to_string(),
-            name: "large.png".to_string(),
-            kind: MediaKind::Image,
-            origin: MediaOrigin::Local,
-            file_name: "large.png".to_string(),
-            mime_type: "image/png".to_string(),
-            byte_size: bytes.len() as u64,
-            sha256: "large".to_string(),
-            source_url: None,
-            file_count: None,
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-            preview_url: None,
-        };
-        let payload = build_active_payload(&item, &path, &DisplaySettings::default()).unwrap();
+        let payload = build_active_payload_from_bytes(
+            bytes.clone(),
+            &MediaKind::Image,
+            "image/png",
+            &DisplaySettings::default(),
+        )
+        .unwrap();
         assert_eq!(payload.media_bytes.len(), bytes.len());
         assert!(payload.early_script.is_none());
         assert!(payload.script.len() < MAX_EARLY_SCRIPT_BYTES);
         assert!(!payload.script.contains("data:image/png;base64,"));
-        let _ = fs::remove_dir_all(root);
     }
 }

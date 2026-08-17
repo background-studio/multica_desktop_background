@@ -22,7 +22,6 @@ use crate::{
     },
     models::RuntimeStatus,
     payload::ActivePayload,
-    plugin,
     settings::write_json_transaction,
 };
 
@@ -653,11 +652,7 @@ impl MulticaController {
             engine.pause()?;
         }
         self.status.phase = "paused".to_string();
-        self.status.message = if plugin::is_plugin_mode() {
-            MSG_SUSPENDED.to_string()
-        } else {
-            "背景已暂停".to_string()
-        };
+        self.status.message = MSG_SUSPENDED.to_string();
         self.status.last_error = None;
         Ok(self.status())
     }
@@ -671,15 +666,19 @@ impl MulticaController {
             if let Some(mut engine) = self.engine.take() {
                 engine.stop()?;
             }
-            let install = self.cached_install()?;
-            if !process_ids_for(&install)?.is_empty() {
-                stop_verified_multica(&install)?;
-                launch_multica(&install, &[])?;
+            match self.cached_install() {
+                Ok(install) => {
+                    if !process_ids_for(&install)?.is_empty() {
+                        stop_verified_multica(&install)?;
+                        launch_multica(&install, &[])?;
+                    }
+                    self.status.multica_version = Some(install.version);
+                }
+                Err(_) => {}
             }
             self.write_state(None)?;
             self.status.phase = "idle".to_string();
             self.status.message = "已恢复官方外观".to_string();
-            self.status.multica_version = Some(install.version);
             self.status.active_targets = 0;
             Ok(self.status())
         })();

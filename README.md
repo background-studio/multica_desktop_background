@@ -3,30 +3,26 @@
 [![org](https://img.shields.io/badge/org-background--studio-0ea5e9)](https://github.com/background-studio)
 [![release](https://img.shields.io/github/v/release/background-studio/multica_desktop_background)](https://github.com/background-studio/multica_desktop_background/releases)
 
-属于 [Background Studio](https://github.com/background-studio) 组织。可独立安装，也可作为
-[Background Studio 壳](https://github.com/background-studio/background-studio) 的插件
-（`--plugin` + `*-plugin.zip`，见 [docs/plugin-protocol.md](./docs/plugin-protocol.md)）。
+属于 [Background Studio](https://github.com/background-studio) 组织。这是给
+[Background Studio 壳](https://github.com/background-studio/background-studio)
+用的纯 Rust 无界面 worker：Named Pipe 协议 2，没有独立安装器，也没有常驻 UI。
 
-插件模式下启用后不会自动打开 Multica。worker 等你照常启动官方程序：新启动的普通进程会按完整路径确认后重启为可注入会话并自动套上次背景；启用前已经在跑的进程不会被静默关掉，需要手动「立即接管」。暂停或恢复官方外观会停掉这次进程里的自动接管，直到再点应用。
+协议见 [docs/plugin-protocol.md](./docs/plugin-protocol.md) 和根级 [plugin.json](./plugin.json)。
 
-一个面向 Windows 官方 Multica 桌面应用的独立背景管理器。它通过本机回环
+一个面向 Windows 官方 Multica 桌面应用的可逆背景 worker。它通过本机回环
 Chromium DevTools Protocol 动态加载背景，不修改 `app.asar`、应用签名、
-登录状态或页面数据。
-
-管理器采用 Tauri 2、Rust 和系统 WebView2。
+登录状态或页面数据。启动 Multica 时仍走透明 WCO 安全补丁；失败会恢复官方进程。
 
 > 非 Multica 官方产品。Multica 及相关商标归其权利人所有。
 
 ## 功能
 
-- 导入本地图片、视频或整个文件夹
-- 下载 HTTP/HTTPS 网络图片和视频并纳入受管媒体库
+- 由壳 `configure` 下发回环媒体 URL 和 Multica 显示参数
 - 图片覆盖、适应、拉伸和平铺
 - 透明度、模糊、缩放、焦点位置、遮罩颜色与强度
-- 侧栏、内容区、菜单不透明度控制
-- 顺序或随机轮播，自定义切换间隔与播放列表
-- 实时预览、热更新、系统托盘、Windows 自启动
-- 一键暂停或完整恢复官方外观
+- 侧栏、内容区、菜单、首页/任务页强度
+- 自动接管新启动的官方 Multica，热更新已注入会话
+- 一键暂停或完整恢复官方外观；`shutdown` 保留 Multica
 
 支持的图片格式：PNG、JPEG、WebP、GIF、AVIF。
 
@@ -34,56 +30,24 @@ Chromium DevTools Protocol 动态加载背景，不修改 `app.asar`、应用签
 
 ## 开发
 
-要求 Node.js 22 或更高版本、Rust stable、Visual Studio Build Tools 的
-“使用 C++ 的桌面开发”工作负载，以及已安装的官方 Multica 桌面应用
-（默认路径 `%LOCALAPPDATA%\Programs\@multicadesktop\Multica.exe`）。
-Windows 10/11 还需 WebView2 Runtime。
+要求 Rust stable、Visual Studio Build Tools 的“使用 C++ 的桌面开发”工作负载，
+以及已安装的官方 Multica 桌面应用
+（默认路径 `%LOCALAPPDATA%\\Programs\\@multicadesktop\\Multica.exe`）。
 
 ```powershell
-npm install
-npm run check
-npm run dev
+cargo fmt --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml
+cargo build --release --manifest-path src-tauri/Cargo.toml
 ```
 
-只预览界面：
-
-```powershell
-npm run dev:web
-```
-
-构建 Windows 安装包：
-
-```powershell
-npm run package:win
-```
-
-NSIS 产物位于 `src-tauri/target/release/bundle/nsis/`。
+`cargo build --release` 产出 `src-tauri/target/release/multica-background-studio.exe`；发布 zip 会把它命名为 `Multica Background Studio.exe`。壳启动时仍可带 `--plugin`，worker 会忽略多余参数并直接进入 Named Pipe 服务。
 
 ## 发布
 
-推送与应用版本一致的 `v*` 标签会触发 GitHub Actions，在 Windows runner 上执行
-完整检查、构建 NSIS 安装包，并创建正式 GitHub Release：
+推送与 `src-tauri/Cargo.toml` 版本一致的 `v*` 标签会触发 GitHub Actions：
+`cargo build --release`，然后上传
+`MulticaBackgroundStudio-<version>-plugin.zip`（exe + `plugin.json` + 图标）。
+不生成 NSIS。
 
-```powershell
-git tag v0.2.0
-git push origin v0.2.0
-```
-
-工作流会核对 `package.json`、`src-tauri/Cargo.toml`、`tauri.conf.json` 和标签版本，
-任一不一致都会停止发布。Release 同时上传 NSIS 与
-`MulticaBackgroundStudio-<version>-plugin.zip`。
-
-维护 Multica 页面样式、CDP 注入或媒体流程前，请先阅读项目 Skill：
+维护 Multica 页面样式、CDP 注入或 WCO 启动前，请先阅读项目 Skill：
 [`multica-background-development`](./.cursor/skills/multica-background-development/SKILL.md)。
-
-## 安全边界
-
-- 仅连接 `127.0.0.1` 回环调试口
-- 仅向 `https://multica.ai/` / `https://www.multica.ai/` 页面注入
-- 不修改 Multica 安装资源；暂停和恢复必须能完整移除注入
-- 应用背景时如 Multica 未开启调试口，需要重启一次 Multica
-- 插件模式只监视并接管官方安装路径上的 `Multica.exe`，不改快捷方式或安装文件
-
-## 版本
-
-当前版本：`0.2.0`。

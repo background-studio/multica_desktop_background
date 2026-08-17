@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   windows:
-    name: Build and publish Windows release
+    name: Build and publish Windows plugin zip
     runs-on: windows-latest
 
     steps:
@@ -23,67 +23,63 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: npm
-
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
 
       - name: Cache Rust build artifacts
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
 
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Verify tag and application versions
+      - name: Verify tag and crate versions
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}"
-          $npmVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
           $cargo = cargo metadata --manifest-path src-tauri/Cargo.toml --no-deps --format-version 1 | ConvertFrom-Json
           $cargoVersion = ($cargo.packages | Where-Object name -eq "multica-background-studio").version
-          if ($tag -ne "v$npmVersion") {
-            throw "标签 $tag 与 package.json 版本 v$npmVersion 不一致。"
+          if ($tag -ne "v$cargoVersion") {
+            throw "标签 $tag 与 Cargo.toml 版本 v$cargoVersion 不一致。"
           }
-          if ($tauriVersion -ne $npmVersion -or $cargoVersion -ne $npmVersion) {
-            throw "package.json、tauri.conf.json 与 Cargo.toml 的版本号不一致。"
+          $manifest = Get-Content plugin.json -Raw | ConvertFrom-Json
+          if ($manifest.pluginProtocol -ne 2 -or $manifest.id -ne "multica") {
+            throw "plugin.json 的 pluginProtocol/id 无效。"
           }
 
-      - name: Run checks
-        run: npm run check
+      - name: Format and test
+        working-directory: src-tauri
+        run: |
+          cargo fmt --all -- --check
+          cargo test
 
-      - name: Build and publish GitHub Release
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "Multica Background Studio ${{ github.ref_name }}"
-          generateReleaseNotes: true
-          releaseDraft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
+      - name: Build release worker
+        run: cargo build --release --manifest-path src-tauri/Cargo.toml
 
       - name: Publish plugin.zip for Background Studio host
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $exe = Get-ChildItem "src-tauri/target/release/*.exe" |
-            Where-Object { $_.Name -notmatch '(?i)(uninstall|nsis)' } |
-            Select-Object -First 1
-          if (-not $exe) { throw "找不到 release 可执行文件。" }
+          $cargo = cargo metadata --manifest-path src-tauri/Cargo.toml --no-deps --format-version 1 | ConvertFrom-Json
+          $version = ($cargo.packages | Where-Object name -eq "multica-background-studio").version
+          $exe = "src-tauri/target/release/multica-background-studio.exe"
+          if (-not (Test-Path $exe)) { throw "找不到 release 可执行文件：$exe" }
           $stage = Join-Path $env:RUNNER_TEMP "multica-plugin"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item $exe.FullName (Join-Path $stage "Multica Background Studio.exe")
+          Copy-Item $exe (Join-Path $stage "Multica Background Studio.exe")
+          Copy-Item "plugin.json" (Join-Path $stage "plugin.json")
+          if (Test-Path "src-tauri/icons/icon.png") {
+            Copy-Item "src-tauri/icons/icon.png" (Join-Path $stage "icon.png")
+          }
+          if (Test-Path "src-tauri/icons/icon.ico") {
+            Copy-Item "src-tauri/icons/icon.ico" (Join-Path $stage "icon.ico")
+          }
           $zipName = "MulticaBackgroundStudio-$version-plugin.zip"
           $zipPath = Join-Path $env:RUNNER_TEMP $zipName
           if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
           Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zipPath
-          gh release upload "${{ github.ref_name }}" $zipPath --clobber
+          $tag = "${{ github.ref_name }}"
+          $ghArgs = @("release", "create", $tag, $zipPath, "--title", "Multica Background Studio $tag", "--generate-notes")
+          if ($tag -match "-") { $ghArgs += "--prerelease" }
+          gh @ghArgs

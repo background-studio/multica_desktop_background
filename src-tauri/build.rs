@@ -26,5 +26,4 @@ fn main() {
     );
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR")).join("payload_assets.rs");
     fs::write(output, generated).expect("write generated payload assets");
-    tauri_build::build()
 }
