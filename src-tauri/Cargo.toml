@@ -1,6 +1,6 @@
 [package]
 name = "multica-background-studio"
-version = "0.3.0"
+version = "0.3.1"
 description = "A headless Background Studio worker for the Multica Windows desktop app."
 authors = ["Multica Background Studio contributors"]
 license = "MIT"
