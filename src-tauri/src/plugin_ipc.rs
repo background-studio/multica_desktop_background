@@ -93,7 +93,7 @@ async fn handle_client(
 }
 
 async fn dispatch(
-    state: &WorkerState,
+    state: &Arc<WorkerState>,
     cmd: String,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -101,12 +101,24 @@ async fn dispatch(
         "hello" => Ok(WorkerState::hello()),
         "configure" => state.configure(params).await,
         "status" => state.status_value(),
-        "apply" => state.apply().await,
-        "pause" => state.pause().await,
-        "restore" => state.restore().await,
+        "apply" => run_blocking(state, WorkerState::apply_blocking).await,
+        "pause" => run_blocking(state, WorkerState::pause_blocking).await,
+        "restore" => run_blocking(state, WorkerState::restore_blocking).await,
         "shutdown" => state.shutdown(),
         other => Err(format!("未知命令：{other}")),
     }
+}
+
+/// 在 blocking 线程池里执行会长时间持锁的命令，保证 tokio runtime
+/// 工作线程（尤其是管道 accept 循环）永远不会被它们卡住。
+async fn run_blocking(
+    state: &Arc<WorkerState>,
+    task: fn(&WorkerState) -> Result<serde_json::Value, String>,
+) -> Result<serde_json::Value, String> {
+    let state = Arc::clone(state);
+    tokio::task::spawn_blocking(move || task(&state))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[cfg(test)]
@@ -118,7 +130,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_hello_and_unknown() {
         let dir = std::env::temp_dir().join(format!("multica-ipc-{}", uuid::Uuid::new_v4()));
-        let state = WorkerState::load_from(dir).unwrap();
+        let state = Arc::new(WorkerState::load_from(dir).unwrap());
         let hello = dispatch(&state, "hello".to_string(), json!(null))
             .await
             .unwrap();

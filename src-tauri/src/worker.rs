@@ -163,20 +163,28 @@ impl WorkerState {
         hello_result()
     }
 
-    pub async fn configure(&self, params: Value) -> Result<Value, String> {
+    /// IPC 处理入口。下载在异步侧完成，其余会抢 controller/watcher 锁的部分
+    /// 全部放进 blocking 线程池，避免长时间占用 tokio runtime 工作线程
+    /// 把管道 accept 循环饿死。
+    pub async fn configure(self: &Arc<Self>, params: Value) -> Result<Value, String> {
         let spec = parse_configure(&params)?;
         let bytes = download_configured_media(&spec).await?;
-        let payload = build_active_payload_from_bytes(
-            bytes,
-            &spec.media.kind,
-            &spec.media.mime_type,
-            &spec.display,
-        )?;
-        self.store_and_maybe_hot_update(spec, payload).await?;
-        self.status_value()
+        let state = Arc::clone(self);
+        tokio::task::spawn_blocking(move || {
+            let payload = build_active_payload_from_bytes(
+                bytes,
+                &spec.media.kind,
+                &spec.media.mime_type,
+                &spec.display,
+            )?;
+            state.store_and_maybe_hot_update_blocking(spec, payload)?;
+            state.status_value()
+        })
+        .await
+        .map_err(|error| error.to_string())?
     }
 
-    async fn store_and_maybe_hot_update(
+    fn store_and_maybe_hot_update_blocking(
         &self,
         spec: ConfigureSpec,
         payload: ActivePayload,
@@ -187,12 +195,15 @@ impl WorkerState {
                 payload: payload.clone(),
             });
         }
+        // 必须先取进程列表、再拿 watcher 锁：tick_managed_launch 的加锁顺序是
+        // controller → watcher，这里若持着 watcher 再等 controller 会构成
+        // AB-BA 死锁（正是导致管道 os error 231 卡死的根因）。
+        let processes = lock(&self.controller)
+            .ok()
+            .and_then(|mut controller| controller.probe_managed().ok())
+            .map(|probe| process_key_list(&probe.processes))
+            .unwrap_or_default();
         if let Ok(mut watcher) = lock(&self.watcher) {
-            let processes = lock(&self.controller)
-                .ok()
-                .and_then(|mut controller| controller.probe_managed().ok())
-                .map(|probe| process_key_list(&probe.processes))
-                .unwrap_or_default();
             watcher.arm_after_configure(&processes);
         }
         if let Ok(mut controller) = lock(&self.controller) {
@@ -207,11 +218,7 @@ impl WorkerState {
             let Some(_busy) = BusyGuard::acquire(&self.managed_busy) else {
                 return Err(MSG_BUSY.to_string());
             };
-            let controller = Arc::clone(&self.controller);
-            let result =
-                tokio::task::spawn_blocking(move || lock(&controller)?.apply(payload, false))
-                    .await
-                    .map_err(|error| error.to_string())?;
+            let result = lock(&self.controller)?.apply(payload, false);
             let _ = self.refresh_runtime_status();
             match result {
                 Ok(_) => {
@@ -222,18 +229,23 @@ impl WorkerState {
                     return Err(error);
                 }
             }
-        } else if !lock(&self.controller)?.watcher_paused() {
-            let controller = Arc::clone(&self.controller);
-            let _ =
-                tokio::task::spawn_blocking(move || lock(&controller)?.reconnect_saved(payload))
-                    .await;
-            let _ = self.refresh_runtime_status();
+        } else {
+            let reconnected = match lock(&self.controller) {
+                Ok(mut controller) if !controller.watcher_paused() => {
+                    let _ = controller.reconnect_saved(payload);
+                    true
+                }
+                _ => false,
+            };
+            if reconnected {
+                let _ = self.refresh_runtime_status();
+            }
         }
         let _ = self.refresh_runtime_status();
         Ok(())
     }
 
-    pub async fn apply(&self) -> Result<Value, String> {
+    pub fn apply_blocking(&self) -> Result<Value, String> {
         let Some(_busy) = BusyGuard::acquire(&self.managed_busy) else {
             return Err(MSG_BUSY.to_string());
         };
@@ -249,21 +261,12 @@ impl WorkerState {
                 return Err(error);
             }
         };
-        let controller = Arc::clone(&self.controller);
-        let first_payload = payload.clone();
-        let first =
-            tokio::task::spawn_blocking(move || lock(&controller)?.apply(first_payload, false))
-                .await
-                .map_err(|error| error.to_string())?;
+        let first = lock(&self.controller)?.apply(payload.clone(), false);
         let _ = self.refresh_runtime_status();
         let result = match first {
             Ok(_) => Ok(()),
             Err(error) if error.contains("需要重启一次") => {
-                let controller = Arc::clone(&self.controller);
-                let retry =
-                    tokio::task::spawn_blocking(move || lock(&controller)?.apply(payload, true))
-                        .await
-                        .map_err(|error| error.to_string())?;
+                let retry = lock(&self.controller)?.apply(payload, true);
                 let _ = self.refresh_runtime_status();
                 retry.map(|_| ())
             }
@@ -278,28 +281,22 @@ impl WorkerState {
         self.status_value()
     }
 
-    pub async fn pause(&self) -> Result<Value, String> {
+    pub fn pause_blocking(&self) -> Result<Value, String> {
         let Some(_busy) = BusyGuard::acquire(&self.managed_busy) else {
             return Err(MSG_BUSY.to_string());
         };
         let _ = self.suspend_managed_watcher();
-        let controller = Arc::clone(&self.controller);
-        tokio::task::spawn_blocking(move || lock(&controller)?.pause())
-            .await
-            .map_err(|error| error.to_string())??;
+        lock(&self.controller)?.pause()?;
         let _ = self.refresh_runtime_status();
         self.status_value()
     }
 
-    pub async fn restore(&self) -> Result<Value, String> {
+    pub fn restore_blocking(&self) -> Result<Value, String> {
         let Some(_busy) = BusyGuard::acquire(&self.managed_busy) else {
             return Err(MSG_BUSY.to_string());
         };
         let _ = self.suspend_managed_watcher();
-        let controller = Arc::clone(&self.controller);
-        tokio::task::spawn_blocking(move || lock(&controller)?.restore())
-            .await
-            .map_err(|error| error.to_string())??;
+        lock(&self.controller)?.restore()?;
         let _ = self.refresh_runtime_status();
         self.status_value()
     }
@@ -534,7 +531,7 @@ mod tests {
 
     #[tokio::test]
     async fn configure_stores_revision_without_takeover() {
-        let state = temp_state();
+        let state = Arc::new(temp_state());
         let body = b"worker-png";
         let port = serve_body(body);
         let status = state
@@ -557,22 +554,22 @@ mod tests {
         assert_ne!(status["phase"], "active");
     }
 
-    #[tokio::test]
-    async fn apply_without_configure_fails() {
+    #[test]
+    fn apply_without_configure_fails() {
         let state = temp_state();
-        let error = state.apply().await.unwrap_err();
+        let error = state.apply_blocking().unwrap_err();
         assert!(error.contains("尚未配置"));
         assert_eq!(state.runtime_status().unwrap().message, MSG_UNCONFIGURED);
     }
 
-    #[tokio::test]
-    async fn pause_restore_and_shutdown() {
+    #[test]
+    fn pause_restore_and_shutdown() {
         let state = temp_state();
-        let paused = state.pause().await.unwrap();
+        let paused = state.pause_blocking().unwrap();
         assert_eq!(paused["paused"], true);
         assert_eq!(paused["phase"], "paused");
 
-        let restored = state.restore().await.unwrap();
+        let restored = state.restore_blocking().unwrap();
         assert_eq!(restored["phase"], "idle");
         assert_eq!(restored["paused"], false);
 
@@ -583,8 +580,8 @@ mod tests {
         assert_ne!(state.runtime_status().unwrap().phase, "restoring");
     }
 
-    #[tokio::test]
-    async fn busy_guard_blocks_concurrent_apply() {
+    #[test]
+    fn busy_guard_blocks_concurrent_apply() {
         let state = Arc::new(temp_state());
         let payload = build_active_payload_from_bytes(
             b"x".to_vec(),
@@ -599,7 +596,7 @@ mod tests {
         });
         let flag = &state.managed_busy;
         let first = BusyGuard::acquire(flag).unwrap();
-        let error = state.apply().await.unwrap_err();
+        let error = state.apply_blocking().unwrap_err();
         assert_eq!(error, MSG_BUSY);
         drop(first);
         assert!(BusyGuard::acquire(&AtomicBool::new(false)).is_some());
