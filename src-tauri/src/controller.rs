@@ -17,8 +17,9 @@ use crate::{
     electron_wco,
     injector::{read_browser_identity, window_controls_overlay_visible, InjectorEngine},
     managed_launch::{
-        snapshot_executable_processes, Observation, ProcessRecord, WatcherAction, MSG_AUTO_APPLIED,
-        MSG_DEBUG_TIMEOUT, MSG_EXISTING, MSG_SUSPENDED, MSG_TAKING_OVER, MSG_WAITING,
+        snapshot_executable_processes, Observation, ProcessRecord, ProcessTracker, WatcherAction,
+        MSG_AUTO_APPLIED, MSG_DEBUG_TIMEOUT, MSG_EXISTING, MSG_SUSPENDED, MSG_TAKING_OVER,
+        MSG_WAITING,
     },
     models::RuntimeStatus,
     payload::ActivePayload,
@@ -299,6 +300,7 @@ pub struct MulticaController {
     state: Option<RuntimeState>,
     status: RuntimeStatus,
     install_cache: Option<MulticaInstall>,
+    tracker: ProcessTracker,
     watcher_paused: bool,
 }
 
@@ -319,6 +321,7 @@ impl MulticaController {
             state,
             status: RuntimeStatus::default(),
             install_cache: None,
+            tracker: ProcessTracker::new(),
             watcher_paused: false,
         }
     }
@@ -394,7 +397,7 @@ impl MulticaController {
 
     pub fn probe_managed(&mut self) -> Result<ManagedProbe, String> {
         let install = self.cached_install()?;
-        let processes = process_records_for(&install)?;
+        let processes = self.tracker.scan(&install.executable)?;
         let engine_alive = self
             .engine
             .as_ref()
